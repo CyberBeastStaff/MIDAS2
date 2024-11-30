@@ -1,0 +1,307 @@
+import gradio as gr
+import torch
+from transformers import AutoModelForCausalLM, AutoTokenizer, TextIteratorStreamer, GenerationConfig
+from threading import Thread
+from typing import Iterator
+import logging
+import sys
+import psutil
+import GPUtil
+from huggingface_hub import list_models
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    stream=sys.stdout
+)
+logger = logging.getLogger(__name__)
+
+DEFAULT_MODELS = [
+    "facebook/opt-1.3b",
+    "facebook/opt-350m",
+    "microsoft/phi-1_5",
+    "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
+]
+
+class LLMInterface:
+    def __init__(self):
+        self.model_name = DEFAULT_MODELS[0]
+        self.model = None
+        self.tokenizer = None
+        self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        logger.info(f"Using device: {self.device}")
+        self.load_model()
+
+    def load_model(self):
+        logger.info(f"Loading model: {self.model_name}")
+        self.tokenizer = AutoTokenizer.from_pretrained(self.model_name)
+        self.model = AutoModelForCausalLM.from_pretrained(
+            self.model_name,
+            torch_dtype=torch.float16 if self.device == "cuda" else torch.float32,
+            device_map="auto"
+        )
+        logger.info("Model loaded successfully")
+
+    def generate_response(self, message, history, temperature=0.7, max_new_tokens=1000, 
+                        top_p=0.95, top_k=50, repetition_penalty=1.2):
+        if not self.model or not self.tokenizer:
+            yield "Error: Model not loaded properly"
+            return
+
+        # Format with system prompt for more focused responses
+        system_prompt = "You are a helpful AI assistant. Keep your responses concise, relevant, and directly address the user's question."
+        conversation = f"{system_prompt}\n\n"
+        
+        # Add relevant history (last 3 turns only)
+        if history:
+            for h in history[-3:]:
+                conversation += f"User: {h[0]}\nAssistant: {h[1]}\n"
+        
+        conversation += f"User: {message}\nAssistant: Let me help you with that. "
+
+        # Encode the input
+        inputs = self.tokenizer.encode(conversation, return_tensors="pt").to(self.device)
+        
+        # Set up the generation config with lower max tokens
+        gen_config = GenerationConfig(
+            temperature=temperature,
+            top_p=top_p,
+            top_k=top_k,
+            repetition_penalty=repetition_penalty,
+            max_new_tokens=min(max_new_tokens, 500),  # Cap maximum length
+            pad_token_id=self.tokenizer.eos_token_id
+        )
+
+        # Generate response with streaming
+        streamer = TextIteratorStreamer(self.tokenizer, skip_special_tokens=True)
+        generation_kwargs = {
+            "input_ids": inputs,
+            "generation_config": gen_config,
+            "streamer": streamer,
+            "return_dict_in_generate": True
+        }
+
+        # Start generation in a separate thread
+        thread = Thread(target=self.model.generate, kwargs=generation_kwargs)
+        thread.start()
+
+        # Stream the response
+        response = ""
+        for text in streamer:
+            response += text
+            # Clean up the response to start from where the Assistant's response should begin
+            if not response.strip():
+                continue
+            yield response.strip()
+
+        logger.info("Response generation complete")
+
+def get_system_info():
+    cpu_percent = psutil.cpu_percent(interval=1)
+    memory = psutil.virtual_memory()
+    gpu_info = ""
+    
+    if torch.cuda.is_available():
+        try:
+            gpus = GPUtil.getGPUs()
+            for gpu in gpus:
+                gpu_info += f"\nGPU {gpu.id}: {gpu.name}"
+                gpu_info += f"\n - Memory Used: {gpu.memoryUsed}MB/{gpu.memoryTotal}MB"
+                gpu_info += f"\n - GPU Load: {gpu.load*100}%"
+        except:
+            gpu_info = "\nGPU information unavailable"
+    else:
+        gpu_info = "\nNo GPU available"
+    
+    return f"""
+    CPU Usage: {cpu_percent}%
+    RAM Usage: {memory.percent}%
+    Used RAM: {memory.used / (1024**3):.1f}GB
+    Total RAM: {memory.total / (1024**3):.1f}GB
+    {gpu_info}
+    """
+
+def create_interface():
+    logger.info("Creating Gradio interface...")
+    llm = LLMInterface()
+    
+    with gr.Blocks(css="footer {visibility: hidden}") as interface:
+        with gr.Row():
+            with gr.Column(scale=1):
+                gr.Markdown("### Model Settings")
+                model_dropdown = gr.Dropdown(
+                    choices=DEFAULT_MODELS,
+                    value=llm.model_name,
+                    label="Select Model",
+                    interactive=True
+                )
+                
+                with gr.Accordion("Generation Parameters", open=True):
+                    temperature = gr.Slider(
+                        minimum=0.1,
+                        maximum=2.0,
+                        value=0.7,
+                        step=0.1,
+                        label="Temperature",
+                        interactive=True
+                    )
+                    
+                    max_new_tokens = gr.Slider(
+                        minimum=100,
+                        maximum=2000,
+                        value=1000,
+                        step=100,
+                        label="Max New Tokens",
+                        interactive=True
+                    )
+                    
+                    with gr.Accordion("Advanced Parameters", open=True):
+                        top_p = gr.Slider(
+                            minimum=0.1,
+                            maximum=1.0,
+                            value=0.95,
+                            step=0.05,
+                            label="Top-p",
+                            interactive=True
+                        )
+                        
+                        top_k = gr.Slider(
+                            minimum=1,
+                            maximum=100,
+                            value=50,
+                            step=1,
+                            label="Top-k",
+                            interactive=True
+                        )
+                        
+                        repetition_penalty = gr.Slider(
+                            minimum=1.0,
+                            maximum=2.0,
+                            value=1.2,
+                            step=0.1,
+                            label="Repetition Penalty",
+                            interactive=True
+                        )
+                
+                with gr.Accordion("System Information", open=True):
+                    system_info = gr.Textbox(
+                        value=get_system_info(),
+                        label="System Status",
+                        interactive=False,
+                        every=5,  # Auto-refresh every 5 seconds
+                        elem_classes="monospace"
+                    )
+                
+            with gr.Column(scale=2):
+                gr.Markdown("""
+                # Local LLM Chat Interface
+                Chat with a local language model powered by Hugging Face Transformers.
+                """)
+                
+                chatbot = gr.Chatbot(
+                    height=600,
+                    show_copy_button=True,
+                    avatar_images=(
+                        "https://huggingface.co/datasets/codeium/codeium-assets/resolve/main/gradio/user.png",
+                        "https://huggingface.co/datasets/codeium/codeium-assets/resolve/main/gradio/assistant.png"
+                    )
+                )
+                
+                with gr.Row():
+                    message = gr.Textbox(
+                        placeholder="Type your message here...",
+                        label="Input",
+                        lines=3,
+                        scale=9
+                    )
+                    submit = gr.Button("Send", variant="primary", scale=1)
+                
+                with gr.Row():
+                    clear = gr.Button("Clear Chat")
+                    regenerate = gr.Button("Regenerate")
+                    stop = gr.Button("Stop")
+            
+        def user_message(message: str, history: list):
+            logger.info("Processing user message...")
+            return "", history + [[message, None]]
+            
+        def bot_message(history: list, temp, max_tokens, top_p_val, top_k_val, rep_penalty):
+            logger.info("Processing bot response...")
+            history[-1][1] = ""
+            for response in llm.generate_response(
+                history[-1][0], 
+                history[:-1],
+                temperature=temp,
+                max_new_tokens=max_tokens,
+                top_p=top_p_val,
+                top_k=top_k_val,
+                repetition_penalty=rep_penalty
+            ):
+                history[-1][1] = response
+                yield history
+            logger.info("Bot response complete")
+        
+        def regenerate_response(history: list, temp, max_tokens, top_p_val, top_k_val, rep_penalty):
+            if not history:
+                return history
+            last_user_message = history[-1][0]
+            history.pop()
+            history.append([last_user_message, None])
+            return bot_message(history, temp, max_tokens, top_p_val, top_k_val, rep_penalty)
+        
+        def change_model(model_name):
+            logger.info(f"Changing model to {model_name}")
+            llm.model_name = model_name
+            llm.load_model()
+            return f"Model changed to {model_name}"
+            
+        model_dropdown.change(
+            change_model,
+            inputs=[model_dropdown],
+            outputs=[gr.Textbox(visible=False)]
+        )
+        
+        submit_event = submit.click(
+            user_message,
+            [message, chatbot],
+            [message, chatbot]
+        ).then(
+            bot_message,
+            [chatbot, temperature, max_new_tokens, top_p, top_k, repetition_penalty],
+            chatbot
+        )
+        
+        regenerate_event = regenerate.click(
+            regenerate_response,
+            [chatbot, temperature, max_new_tokens, top_p, top_k, repetition_penalty],
+            chatbot
+        )
+        
+        submit_event_2 = message.submit(
+            user_message,
+            [message, chatbot],
+            [message, chatbot]
+        ).then(
+            bot_message,
+            [chatbot, temperature, max_new_tokens, top_p, top_k, repetition_penalty],
+            chatbot
+        )
+        
+        clear.click(lambda: None, None, chatbot)
+        stop.click(lambda: None, None, None, cancels=[submit_event, submit_event_2, regenerate_event])
+        
+        # Update system info automatically
+        system_info.change(fn=get_system_info, inputs=None, outputs=system_info)
+        
+    logger.info("Interface created successfully!")
+    return interface
+
+if __name__ == "__main__":
+    logger.info("Starting LLM Platform...")
+    interface = create_interface()
+    interface.launch(
+        server_name="127.0.0.1",
+        share=False,
+        show_api=False
+    )
