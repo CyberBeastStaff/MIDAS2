@@ -109,10 +109,12 @@ Remember to maintain proper spacing and formatting in your responses.
         prompt += f"Human: {message}\nAssistant: Let me help you with that.\n\n"
 
         try:
-            response = ""
+            response_buffer = []
+            first_chunk = True
+            
             for chunk in self.model(
                 prompt,
-                max_tokens=max_new_tokens,  # Use the full requested token length
+                max_tokens=max_new_tokens,
                 temperature=temperature,
                 top_p=top_p,
                 top_k=top_k,
@@ -121,38 +123,52 @@ Remember to maintain proper spacing and formatting in your responses.
             ):
                 if chunk.get("choices"):
                     text = chunk["choices"][0]["text"]
-                    response += text
+                    response_buffer.append(text)
+                    
+                    # Join all chunks to get the complete response so far
+                    full_response = "".join(response_buffer)
+                    
+                    # Only clean the initial part of the response
+                    if first_chunk:
+                        if full_response.startswith("Assistant:"):
+                            full_response = full_response[len("Assistant:"):]
+                            response_buffer = [full_response]
+                        if full_response.startswith("Let me help you with that."):
+                            full_response = full_response[len("Let me help you with that."):]
+                            response_buffer = [full_response]
+                        first_chunk = False
                     
                     # Clean up the response
-                    clean_response = response
-                    if clean_response.startswith("Assistant:"):
-                        clean_response = clean_response[len("Assistant:"):]
-                    if clean_response.startswith("Let me help you with that."):
-                        clean_response = clean_response[len("Let me help you with that."):]
+                    clean_response = full_response.strip()
                     
-                    # Remove any additional "Human:" or new conversation starts
-                    if "Human:" in clean_response:
-                        clean_response = clean_response.split("Human:")[0]
+                    # Stop at any new conversation markers, but only if they're on a new line
+                    if "\nHuman:" in clean_response:
+                        clean_response = clean_response.split("\nHuman:")[0]
                     
-                    # Clean up markdown formatting
-                    clean_response = clean_response.strip()
+                    # Format markdown elements with proper spacing
+                    clean_response = clean_response.replace("\n```", "\n\n```")
+                    clean_response = clean_response.replace("```\n", "```\n\n")
+                    clean_response = clean_response.replace("\n- ", "\n\n- ")
+                    clean_response = clean_response.replace("\n# ", "\n\n# ")
                     
-                    # Ensure code blocks are properly formatted
-                    clean_response = clean_response.replace("```python\n", "\n```python\n")
-                    clean_response = clean_response.replace("```javascript\n", "\n```javascript\n")
-                    clean_response = clean_response.replace("```\n", "\n```\n")
-                    
-                    # Ensure lists have proper spacing
-                    clean_response = clean_response.replace("\n-", "\n\n-")
-                    clean_response = clean_response.replace("\n1.", "\n\n1.")
-                    
-                    # Ensure headings have proper spacing
-                    clean_response = clean_response.replace("\n#", "\n\n#")
-                    
-                    yield clean_response
-
+                    yield clean_response.strip()
+            
+            # Final cleanup and yield
+            full_response = "".join(response_buffer)
+            if "\nHuman:" in full_response:
+                full_response = full_response.split("\nHuman:")[0]
+            
+            # Format markdown elements one last time
+            full_response = full_response.strip()
+            full_response = full_response.replace("\n```", "\n\n```")
+            full_response = full_response.replace("```\n", "```\n\n")
+            full_response = full_response.replace("\n- ", "\n\n- ")
+            full_response = full_response.replace("\n# ", "\n\n# ")
+            
+            yield full_response.strip()
+            
         except Exception as e:
-            logger.error(f"Generation error: {e}")
-            yield f"Error during generation: {str(e)}"
-
+            logger.error(f"Error generating response: {e}")
+            yield f"Error generating response: {str(e)}"
+        
         logger.info("Response generation complete")

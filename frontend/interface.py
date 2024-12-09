@@ -98,36 +98,56 @@ def create_interface():
     available_models = [model.name for model in llm.get_available_models()]
     
     def create_new_chat():
+        """Create a new chat and return dropdown update, history, and title"""
+        print("[DEBUG] Creating new chat")
         try:
-            response = requests.post('http://127.0.0.1:7860/api/chats',
-                                  json={'title': 'New Chat'},
-                                  headers={'Content-Type': 'application/json'})
-            if response.status_code == 200:
-                chat_data = response.json()
-                choices = list_chats()
-                return (
-                    gr.update(choices=choices, value=f"New Chat ({chat_data['id']})"),
-                    [[None, "Hello! I'm MIDAS, your AI assistant. How can I help you today?"]],
-                    "### New Chat"
-                )
-            else:
-                print(f"Error creating chat: {response.status_code} - {response.text}")
-                return None, None, None
+            # Create new chat
+            headers = {'Content-Type': 'application/json'}
+            response = requests.post('http://127.0.0.1:7860/api/chats', headers=headers)
+            
+            if response.status_code != 200:
+                print(f"[ERROR] Failed to create chat: {response.status_code}")
+                print(f"[ERROR] Response: {response.text}")
+                return gr.update(), [], "### Error creating chat"
+                
+            chat_data = response.json()
+            chat_id = chat_data['id']
+            initial_title = "New Chat"
+            
+            # Update the chat with initial title
+            title_response = requests.put(
+                f'http://127.0.0.1:7860/api/chats/{chat_id}',
+                json={'title': initial_title},
+                headers=headers
+            )
+            
+            if title_response.status_code != 200:
+                print(f"[ERROR] Failed to set initial title: {title_response.status_code}")
+            
+            # Get updated list of chats
+            choices = list_chats()
+            # Find the matching title for this chat ID
+            selected_title = initial_title
+            
+            return gr.update(choices=choices, value=selected_title), [], f"### {initial_title}"
         except Exception as e:
-            print(f"Error creating chat: {e}")
-            return None, None, None
+            print(f"[ERROR] Error creating chat: {e}")
+            return gr.update(), [], "### Error creating chat"
 
     def list_chats():
         try:
             response = requests.get('http://127.0.0.1:7860/api/chats')
             if response.status_code == 200:
                 chats = response.json()
-                # Sort chats by last modified time, newest first
-                return [f"{chat['title']} ({chat['id']})" for chat in reversed(chats)]
-            print(f"[ERROR] Failed to list chats: {response.status_code}")
-            return []
+                # Store chat_id in the value but only show title in display
+                choices = {chat['title']: f"{chat['title']} ({chat['id']})" for chat in chats}
+                return list(choices.keys())  # Only return the titles
+            else:
+                print(f"[ERROR] Failed to get chats: {response.status_code}")
+                print(f"[ERROR] Response: {response.text}")
+                return []
         except Exception as e:
-            print(f"[ERROR] Error listing chats: {e}")
+            print(f"[ERROR] Exception in list_chats: {str(e)}")
             return []
 
     def refresh_chat_list():
@@ -214,7 +234,7 @@ def create_interface():
             if response.status_code == 200:
                 print("[DEBUG] Title updated successfully, refreshing chat list")
                 choices = list_chats()
-                return gr.update(choices=choices, value=f"{new_title} ({chat_id})")
+                return gr.update(choices=choices, value=new_title)
             else:
                 print(f"[ERROR] Failed to update title: {response.status_code} - {response.text}")
                 return gr.update()
@@ -227,7 +247,16 @@ def create_interface():
             print("No chat selected")  # Debug print
             return None
         try:
-            chat_id = chat_selection.split('(')[-1].rstrip(')')
+            # Get chat ID mapping
+            response = requests.get('http://127.0.0.1:7860/api/chats')
+            chats = response.json() if response.status_code == 200 else []
+            title_to_id = {chat['title']: chat['id'] for chat in chats}
+            chat_id = title_to_id.get(chat_selection)
+            
+            if not chat_id:
+                print(f"[ERROR] Could not find chat ID for title: {chat_selection}")
+                return None
+            
             print(f"Loading chat: {chat_id}")  # Debug print
             response = requests.get(f'http://127.0.0.1:7860/api/chats/{chat_id}')
             if response.status_code != 200:
@@ -239,19 +268,30 @@ def create_interface():
             
             # Sort messages by timestamp if available
             if messages and 'timestamp' in messages[0]:
-                messages.sort(key=lambda x: x.get('timestamp', 0))
+                messages.sort(key=lambda x: x.get('timestamp', ''))
             
-            for i, msg in enumerate(messages):
+            # Group messages into pairs
+            current_user_msg = None
+            for msg in messages:
                 role = msg.get('role')
                 content = msg.get('content', '')
                 
                 if role == 'user':
-                    history.append([content, None])
+                    if current_user_msg is not None:
+                        # If we have an unpaired user message, add it with None response
+                        history.append([current_user_msg, None])
+                    current_user_msg = content
+                elif role == 'assistant' and current_user_msg is not None:
+                    # Pair assistant response with the current user message
+                    history.append([current_user_msg, content])
+                    current_user_msg = None
                 elif role == 'assistant':
-                    if history and history[-1][1] is None:
-                        history[-1][1] = content
-                    else:
-                        history.append([None, content])
+                    # Handle standalone assistant messages (like greetings)
+                    history.append([None, content])
+            
+            # Add any remaining unpaired user message
+            if current_user_msg is not None:
+                history.append([current_user_msg, None])
             
             print(f"Loaded chat history: {history}")  # Debug print
             return history
@@ -263,7 +303,16 @@ def create_interface():
         if not chat_selection:
             return gr.update(), None, "### New Chat"
         try:
-            chat_id = chat_selection.split('(')[-1].rstrip(')')
+            # Get chat ID mapping
+            response = requests.get('http://127.0.0.1:7860/api/chats')
+            chats = response.json() if response.status_code == 200 else []
+            title_to_id = {chat['title']: chat['id'] for chat in chats}
+            chat_id = title_to_id.get(chat_selection)
+            
+            if not chat_id:
+                print(f"[ERROR] Could not find chat ID for title: {chat_selection}")
+                return None, None, "### Error"
+            
             print(f"Deleting chat: {chat_id}")  # Debug print
             response = requests.delete(f'http://127.0.0.1:7860/api/chats/{chat_id}')
             if response.status_code != 200:
@@ -281,7 +330,16 @@ def create_interface():
         if not chat_selection:
             return gr.update(), None
         try:
-            chat_id = chat_selection.split('(')[-1].rstrip(')')
+            # Get chat ID mapping
+            response = requests.get('http://127.0.0.1:7860/api/chats')
+            chats = response.json() if response.status_code == 200 else []
+            title_to_id = {chat['title']: chat['id'] for chat in chats}
+            chat_id = title_to_id.get(chat_selection)
+            
+            if not chat_id:
+                print(f"[ERROR] Could not find chat ID for title: {chat_selection}")
+                return None, None
+            
             print(f"Renaming chat: {chat_id}")  # Debug print
             new_title = create_title_from_message("New Title")
             response = requests.put(
@@ -294,7 +352,7 @@ def create_interface():
             # Update choices after renaming
             choices = list_chats()
             print(f"Available chats after renaming: {choices}")  # Debug print
-            return gr.update(choices=choices, value=f"{new_title} ({chat_id})"), f"### {new_title}"
+            return gr.update(choices=choices, value=new_title), f"### {new_title}"
         except Exception as e:
             print(f"Error renaming chat: {e}")
             return None, None
@@ -304,7 +362,16 @@ def create_interface():
             return history
         
         try:
-            chat_id = chat_selection.split('(')[-1].rstrip(')') if chat_selection else None
+            # Get chat ID mapping
+            response = requests.get('http://127.0.0.1:7860/api/chats')
+            chats = response.json() if response.status_code == 200 else []
+            title_to_id = {chat['title']: chat['id'] for chat in chats}
+            chat_id = title_to_id.get(chat_selection)
+            
+            if not chat_id:
+                print(f"[ERROR] Could not find chat ID for title: {chat_selection}")
+                return history
+            
             print(f"\n[DEBUG] Processing message for chat {chat_id}")
             history[-1][1] = ""
             last_response = ""
@@ -344,8 +411,9 @@ def create_interface():
                             )
                             if response.status_code == 200:
                                 print("[DEBUG] Title updated successfully")
+                                # Update frontend
                                 choices = list_chats()
-                                chat_history_dropdown.update(choices=choices, value=f"{new_title} ({chat_id})")
+                                chat_history_dropdown.update(choices=choices, value=new_title)
                                 chat_title_display.update(value=f"### {new_title}")
                                 title_updated = True
                 except Exception as e:
@@ -368,7 +436,7 @@ def create_interface():
                 if current_title and not title_updated:
                     try:
                         print(f"[DEBUG] Updating title during generation to: {current_title}")
-                        chat_history_dropdown.update(choices=list_chats(), value=f"{current_title} ({chat_id})")
+                        chat_history_dropdown.update(choices=list_chats(), value=current_title)
                         chat_title_display.update(value=f"### {current_title}")
                         title_updated = True
                     except Exception as e:
@@ -395,7 +463,7 @@ def create_interface():
             if current_title and not title_updated:
                 try:
                     print(f"[DEBUG] Final title update to: {current_title}")
-                    chat_history_dropdown.update(choices=list_chats(), value=f"{current_title} ({chat_id})")
+                    chat_history_dropdown.update(choices=list_chats(), value=current_title)
                     chat_title_display.update(value=f"### {current_title}")
                 except Exception as e:
                     print(f"[ERROR] Failed final title update: {e}")
@@ -424,32 +492,44 @@ def create_interface():
     def user(user_message, history, chat_selection):
         try:
             print(f"\n[DEBUG] Processing user message: {user_message[:50]}...")
-            current_title = "### New Chat"
-            dropdown_update = gr.update()
+            current_title = None  # Initialize as None
             headers = {'Content-Type': 'application/json'}
             base_url = 'http://127.0.0.1:7860/api'
             
             if not chat_selection:
                 print("[DEBUG] No chat selected, creating new chat")
                 dropdown_update, history, current_title = create_new_chat()
-                chat_selection = dropdown_update.value
+                # Get chat ID for the new chat
+                response = requests.get(f'{base_url}/chats')
+                if response.status_code == 200:
+                    chats = response.json()
+                    # Find the most recently created chat
+                    if chats:
+                        latest_chat = max(chats, key=lambda x: x['created_at'])
+                        chat_id = latest_chat['id']
+                    else:
+                        print("[ERROR] No chats found after creation")
+                        return "", history + [[user_message, None]], gr.update(), "### Error"
+                else:
+                    print(f"[ERROR] Failed to get chats: {response.status_code}")
+                    return "", history + [[user_message, None]], gr.update(), "### Error"
+            else:
+                # Get chat ID for existing chat
+                response = requests.get(f'{base_url}/chats')
+                if response.status_code == 200:
+                    chats = response.json()
+                    title_to_id = {chat['title']: chat['id'] for chat in chats}
+                    chat_id = title_to_id.get(chat_selection)
+                    if not chat_id:
+                        print(f"[ERROR] Could not find chat ID for title: {chat_selection}")
+                        return "", history + [[user_message, None]], gr.update(), "### Error"
+                else:
+                    print(f"[ERROR] Failed to get chats: {response.status_code}")
+                    return "", history + [[user_message, None]], gr.update(), "### Error"
             
-            chat_id = chat_selection.split('(')[-1].rstrip(')')
             print(f"[DEBUG] Using chat ID: {chat_id}")
             
-            # Get current chat data
-            chat_response = requests.get(f'{base_url}/chats/{chat_id}')
-            if chat_response.status_code != 200:
-                print(f"[ERROR] Failed to get chat: {chat_response.status_code}")
-                print(f"[ERROR] Response: {chat_response.text}")
-                return "", history + [[user_message, None]], dropdown_update, current_title
-                
-            chat_data = chat_response.json()
-            messages = chat_data.get('messages', [])
-            user_messages = [m for m in messages if m.get('role') == 'user']
-            print(f"[DEBUG] Found {len(user_messages)} existing user messages")
-            
-            # Add new message
+            # Add new message first
             print("[DEBUG] Adding message to chat history")
             message_response = requests.post(
                 f'{base_url}/chats/{chat_id}/messages',
@@ -459,10 +539,45 @@ def create_interface():
             if message_response.status_code != 200:
                 print(f"[ERROR] Failed to save message: {message_response.status_code}")
                 print(f"[ERROR] Response: {message_response.text}")
-                return "", history + [[user_message, None]], dropdown_update, current_title
+                return "", history + [[user_message, None]], gr.update(), current_title or "### Error"
             
-            # Update title if this is the first message
-            if len(user_messages) == 0:
+            # Then get updated chat data
+            chat_response = requests.get(f'{base_url}/chats/{chat_id}')
+            if chat_response.status_code != 200:
+                print(f"[ERROR] Failed to get chat: {chat_response.status_code}")
+                print(f"[ERROR] Response: {chat_response.text}")
+                return "", history + [[user_message, None]], gr.update(), current_title or "### Error"
+                
+            chat_data = chat_response.json()
+            messages = chat_data.get('messages', [])
+            
+            # Convert messages to history format
+            history = []
+            current_user_msg = None
+            
+            for msg in messages:
+                role = msg.get('role')
+                content = msg.get('content', '')
+                
+                if role == 'user':
+                    current_user_msg = content
+                elif role == 'assistant' and current_user_msg is not None:
+                    history.append([current_user_msg, content])
+                    current_user_msg = None
+                elif role == 'assistant' and not history:
+                    # First message is from assistant (greeting)
+                    history.append([None, content])
+                elif role == 'assistant':
+                    # Standalone assistant message
+                    history.append([None, content])
+            
+            # Add any remaining unpaired user message
+            if current_user_msg is not None:
+                history.append([current_user_msg, None])
+            
+            # Check if this is the first user message for title update
+            user_messages = [m for m in messages if m.get('role') == 'user']
+            if len(user_messages) == 1:  # This was the first user message
                 new_title = create_title_from_message(user_message)
                 print(f"[DEBUG] Generated new title: {new_title}")
                 
@@ -478,20 +593,197 @@ def create_interface():
                     print("[DEBUG] Title updated successfully")
                     # Update frontend
                     choices = list_chats()
-                    dropdown_update = gr.update(choices=choices, value=f"{new_title} ({chat_id})")
+                    dropdown_update = gr.update(choices=choices, value=new_title)
                     current_title = f"### {new_title}"
                 else:
                     print(f"[ERROR] Failed to update title: {title_response.status_code}")
                     print(f"[ERROR] Response: {title_response.text}")
+            else:
+                # For existing chats, keep the current title
+                current_title = f"### {chat_data.get('title', 'Chat')}"
+                dropdown_update = gr.update()  # No changes needed for existing chat
             
             print(f"[DEBUG] Returning updates - Title: {current_title}")
-            return "", history + [[user_message, None]], dropdown_update, current_title
+            return "", history, dropdown_update, current_title
             
         except Exception as e:
             print(f"[ERROR] Error in user function: {e}")
             import traceback
-            print(f"[ERROR] Traceback: {traceback.format_exc()}")
-            return "", history + [[user_message, None]], gr.update(), "### New Chat"
+            traceback.print_exc()
+            return "", history + [[user_message, None]], gr.update(), "### Error"
+
+    def load_selected_chat(chat_selection):
+        """Load selected chat and update interface"""
+        print(f"[DEBUG] Loading selected chat: {chat_selection}")
+        if not chat_selection:
+            # Reset to new chat state
+            return (
+                [[None, "Hello! I'm MIDAS, your AI assistant. How can I help you today?"]],
+                "### New Chat"
+            )
+        
+        try:
+            # Get chat ID mapping
+            response = requests.get('http://127.0.0.1:7860/api/chats')
+            chats = response.json() if response.status_code == 200 else []
+            title_to_id = {chat['title']: chat['id'] for chat in chats}
+            chat_id = title_to_id.get(chat_selection)
+            
+            if not chat_id:
+                print(f"[ERROR] Could not find chat ID for title: {chat_selection}")
+                return None, "### Error Loading Chat"
+            
+            print(f"[DEBUG] Fetching chat {chat_id}")
+            
+            response = requests.get(f'http://127.0.0.1:7860/api/chats/{chat_id}')
+            if response.status_code != 200:
+                print(f"[ERROR] Failed to fetch chat: {response.status_code}")
+                return None, "### Error Loading Chat"
+            
+            chat_data = response.json()
+            history = []
+            messages = chat_data.get('messages', [])
+            
+            # Sort messages by timestamp
+            if messages and 'timestamp' in messages[0]:
+                messages.sort(key=lambda x: x.get('timestamp', ''))
+            
+            # Group messages into pairs
+            current_user_msg = None
+            for msg in messages:
+                role = msg.get('role')
+                content = msg.get('content', '')
+                
+                if role == 'user':
+                    current_user_msg = content
+                elif role == 'assistant' and current_user_msg is not None:
+                    history.append([current_user_msg, content])
+                    current_user_msg = None
+                elif role == 'assistant' and not history:
+                    # First message is from assistant (greeting)
+                    history.append([None, content])
+                elif role == 'assistant':
+                    # Standalone assistant message
+                    history.append([None, content])
+            
+            # Add any remaining unpaired user message
+            if current_user_msg is not None:
+                history.append([current_user_msg, None])
+            
+            if not history:
+                # If no messages, show greeting
+                history = [[None, "Hello! I'm MIDAS, your AI assistant. How can I help you today?"]]
+            
+            title = chat_data.get('title', 'Chat')
+            print(f"[DEBUG] Loaded chat with {len(history)} messages")
+            return history, f"### {title}"
+            
+        except Exception as e:
+            print(f"[ERROR] Error loading chat: {e}")
+            return None, "### Error Loading Chat"
+
+    def process_bot_response(chat_selection, history):
+        if not chat_selection:
+            return history
+        
+        try:
+            # Get chat ID mapping
+            response = requests.get('http://127.0.0.1:7860/api/chats')
+            chats = response.json() if response.status_code == 200 else []
+            title_to_id = {chat['title']: chat['id'] for chat in chats}
+            chat_id = title_to_id.get(chat_selection)
+            
+            if not chat_id:
+                print(f"[ERROR] Could not find chat ID for title: {chat_selection}")
+                return history
+            
+            print(f"\n[DEBUG] Processing message for chat {chat_id}")
+            history[-1][1] = ""
+            full_response = ""
+            title_updated = False
+            current_title = None
+            
+            # Get the last user message
+            last_user_message = history[-1][0] if history and history[-1] else None
+            if not last_user_message:
+                print("[ERROR] No user message found in history")
+                return history
+                
+            # Send the message and get streaming response
+            try:
+                # First, save the user message
+                message_response = requests.post(
+                    f'http://127.0.0.1:7860/api/chats/{chat_id}/messages',
+                    json={'role': 'user', 'content': last_user_message},
+                    headers={'Content-Type': 'application/json'}
+                )
+                
+                if message_response.status_code != 200:
+                    print(f"[ERROR] Failed to save user message: {message_response.status_code}")
+                    print(f"[ERROR] Response: {message_response.text}")
+                    return history
+                
+                # Now generate the response
+                for chunk in llm.generate_response(last_user_message, history[:-1]):
+                    if chunk:
+                        full_response = chunk
+                        history[-1][1] = full_response
+                        yield history
+                
+                # Save the complete response
+                if full_response:
+                    save_response = requests.post(
+                        f'http://127.0.0.1:7860/api/chats/{chat_id}/messages',
+                        json={'role': 'assistant', 'content': full_response},
+                        headers={'Content-Type': 'application/json'}
+                    )
+                    if save_response.status_code != 200:
+                        print(f"[ERROR] Failed to save response: {save_response.status_code}")
+                        print(f"[ERROR] Response: {save_response.text}")
+                
+                # Generate and update title if this is the first user message
+                chat_response = requests.get(f'http://127.0.0.1:7860/api/chats/{chat_id}')
+                if chat_response.status_code == 200:
+                    chat_data = chat_response.json()
+                    messages = chat_data.get('messages', [])
+                    user_messages = [m for m in messages if m.get('role') == 'user']
+                    
+                    if len(user_messages) == 1:  # This was the first user message
+                        new_title = create_title_from_message(last_user_message)
+                        print(f"[DEBUG] Updating title to: {new_title}")
+                        
+                        title_response = requests.put(
+                            f'http://127.0.0.1:7860/api/chats/{chat_id}',
+                            json={'title': new_title},
+                            headers={'Content-Type': 'application/json'}
+                        )
+                        
+                        if title_response.status_code == 200:
+                            print("[DEBUG] Title updated successfully")
+                            choices = list_chats()
+                            chat_history_dropdown.update(choices=choices, value=new_title)
+                            chat_title_display.update(value=f"### {new_title}")
+                            title_updated = True
+                        else:
+                            print(f"[ERROR] Failed to update title: {title_response.status_code}")
+                
+            except Exception as e:
+                print(f"[ERROR] Error processing response: {e}")
+                import traceback
+                traceback.print_exc()
+                if not history[-1][1]:
+                    history[-1][1] = "Error: Failed to process response"
+                return history
+            
+            return history
+            
+        except Exception as e:
+            print(f"[ERROR] Bot response error: {e}")
+            import traceback
+            traceback.print_exc()
+            if not history[-1][1]:
+                history[-1][1] = "Error: Failed to process response"
+            return history
 
     with gr.Blocks(
         css=CUSTOM_CSS,
@@ -514,7 +806,7 @@ def create_interface():
                 new_chat_btn = gr.Button("+ New Chat")
                 chat_history_dropdown = gr.Dropdown(
                     choices=initial_choices,
-                    value=f"New Chat ({initial_chat_id})" if initial_chat_id else None,
+                    value=initial_choices[0] if initial_choices else None,
                     label="Chat History",
                     container=True
                 )
@@ -539,27 +831,32 @@ def create_interface():
                 with gr.Accordion("Generation Settings", open=False):
                     temperature = gr.Slider(
                         minimum=0.1, maximum=2.0, value=0.7, step=0.1,
-                        label="Temperature",
+                        label="Response Creativity",
+                        interactive=True,
                         container=True
                     )
                     max_new_tokens = gr.Slider(
                         minimum=50, maximum=2000, value=1000, step=50,
-                        label="Max Length",
+                        label="Maximum Response Length",
+                        interactive=True,
                         container=True
                     )
                     top_p = gr.Slider(
                         minimum=0.1, maximum=1.0, value=0.95, step=0.05,
-                        label="Top P",
+                        label="Response Focus",
+                        interactive=True,
                         container=True
                     )
                     top_k = gr.Slider(
                         minimum=1, maximum=100, value=50, step=1,
-                        label="Top K",
+                        label="Response Variety",
+                        interactive=True,
                         container=True
                     )
                     rep_pen = gr.Slider(
                         minimum=1.0, maximum=2.0, value=1.2, step=0.1,
-                        label="Repetition Penalty",
+                        label="Repetition Prevention",
+                        interactive=True,
                         container=True
                     )
 
@@ -600,23 +897,37 @@ def create_interface():
         
         def create_new_chat():
             try:
-                response = requests.post('http://127.0.0.1:7860/api/chats',
-                                      json={'title': 'New Chat'},
-                                      headers={'Content-Type': 'application/json'})
-                if response.status_code == 200:
-                    chat_data = response.json()
-                    choices = list_chats()
-                    return (
-                        gr.update(choices=choices, value=f"New Chat ({chat_data['id']})"),
-                        [[None, "Hello! I'm MIDAS, your AI assistant. How can I help you today?"]],
-                        "### New Chat"
-                    )
-                else:
-                    print(f"Error creating chat: {response.status_code} - {response.text}")
-                    return None, None, None
+                headers = {'Content-Type': 'application/json'}
+                response = requests.post('http://127.0.0.1:7860/api/chats', headers=headers)
+                
+                if response.status_code != 200:
+                    print(f"[ERROR] Failed to create chat: {response.status_code}")
+                    print(f"[ERROR] Response: {response.text}")
+                    return gr.update(), [], "### Error creating chat"
+                    
+                chat_data = response.json()
+                chat_id = chat_data['id']
+                initial_title = "New Chat"
+                
+                # Update the chat with initial title
+                title_response = requests.put(
+                    f'http://127.0.0.1:7860/api/chats/{chat_id}',
+                    json={'title': initial_title},
+                    headers=headers
+                )
+                
+                if title_response.status_code != 200:
+                    print(f"[ERROR] Failed to set initial title: {title_response.status_code}")
+                
+                # Get updated list of chats
+                choices = list_chats()
+                # Find the matching title for this chat ID
+                selected_title = initial_title
+                
+                return gr.update(choices=choices, value=selected_title), [], f"### {initial_title}"
             except Exception as e:
-                print(f"Error creating chat: {e}")
-                return None, None, None
+                print(f"[ERROR] Error creating chat: {e}")
+                return gr.update(), [], "### Error creating chat"
 
         # Event handlers
         new_chat_btn.click(
@@ -629,8 +940,8 @@ def create_interface():
             [msg, chatbot, chat_history_dropdown],
             [msg, chatbot, chat_history_dropdown, chat_title_display]
         ).then(
-            bot,
-            [chatbot, temperature, max_new_tokens, top_p, top_k, rep_pen, chat_history_dropdown],
+            process_bot_response,
+            [chat_history_dropdown, chatbot],
             chatbot
         )
 
@@ -639,13 +950,13 @@ def create_interface():
             [msg, chatbot, chat_history_dropdown],
             [msg, chatbot, chat_history_dropdown, chat_title_display]
         ).then(
-            bot,
-            [chatbot, temperature, max_new_tokens, top_p, top_k, rep_pen, chat_history_dropdown],
+            process_bot_response,
+            [chat_history_dropdown, chatbot],
             chatbot
         )
 
         chat_history_dropdown.change(
-            lambda x: (load_chat(x), f"### {get_chat_title(x)}") if x else (None, "### New Chat"),
+            load_selected_chat,
             inputs=[chat_history_dropdown],
             outputs=[chatbot, chat_title_display]
         )
