@@ -49,8 +49,11 @@ class LLMInterface:
             self.model = Llama(
                 model_path=model_info.local_path,
                 n_gpu_layers=n_gpu_layers,
-                n_ctx=2048,
+                n_ctx=4096,  # Increased context window
                 n_batch=512,
+                verbose=False,
+                seed=42,  # For consistency
+                f16_kv=True  # For better memory efficiency
             )
             
             self.current_model_id = model_id
@@ -78,52 +81,78 @@ class LLMInterface:
         """Get list of all available models"""
         return self.model_manager.list_models()
 
-    def generate_response(self, message, history, temperature=0.7, max_new_tokens=1000, 
+    def generate_response(self, message, history, temperature=0.7, max_new_tokens=2000, 
                         top_p=0.95, top_k=50, repetition_penalty=1.2):
         if not self.model:
             yield "Error: Model not loaded properly"
             return
 
-        # Format conversation history
-        conversation = ""
+        # Format conversation history with proper prompting
+        prompt = """You are a helpful AI assistant. Format your responses using markdown:
+- Use **bold** for emphasis
+- Use `code` for technical terms, commands, or code snippets
+- Use proper headings with # for titles
+- Use bullet points or numbered lists where appropriate
+- Use > for quotes or important notes
+- Use code blocks with ``` for multi-line code
+- Use --- for horizontal rules where appropriate
+
+Remember to maintain proper spacing and formatting in your responses.
+
+"""
+        
         if history:
             for h in history[-3:]:  # Last 3 turns
-                conversation += f"User: {h[0]}\nAssistant: {h[1]}\n"
-        conversation += f"User: {message}\nAssistant:"
-
-        # Create a queue for streaming responses
-        stream_queue = Queue()
+                if h[0] and h[1]:  # Only add complete exchanges
+                    prompt += f"Human: {h[0]}\nAssistant: {h[1]}\n\n"
         
-        def generate():
-            try:
-                response = ""
-                for chunk in self.model(
-                    conversation,
-                    max_tokens=min(max_new_tokens, 500),
-                    temperature=temperature,
-                    top_p=top_p,
-                    top_k=top_k,
-                    repeat_penalty=repetition_penalty,
-                    stream=True
-                ):
-                    if chunk.get("choices"):
-                        text = chunk["choices"][0]["text"]
-                        response += text
-                        stream_queue.put(response)
-                stream_queue.put(None)  # Signal completion
-            except Exception as e:
-                logger.error(f"Generation error: {e}")
-                stream_queue.put(f"Error during generation: {str(e)}")
-                stream_queue.put(None)
+        prompt += f"Human: {message}\nAssistant: Let me help you with that.\n\n"
 
-        # Start generation in a separate thread
-        Thread(target=generate).start()
+        try:
+            response = ""
+            for chunk in self.model(
+                prompt,
+                max_tokens=max_new_tokens,  # Use the full requested token length
+                temperature=temperature,
+                top_p=top_p,
+                top_k=top_k,
+                repeat_penalty=repetition_penalty,
+                stream=True
+            ):
+                if chunk.get("choices"):
+                    text = chunk["choices"][0]["text"]
+                    response += text
+                    
+                    # Clean up the response
+                    clean_response = response
+                    if clean_response.startswith("Assistant:"):
+                        clean_response = clean_response[len("Assistant:"):]
+                    if clean_response.startswith("Let me help you with that."):
+                        clean_response = clean_response[len("Let me help you with that."):]
+                    
+                    # Remove any additional "Human:" or new conversation starts
+                    if "Human:" in clean_response:
+                        clean_response = clean_response.split("Human:")[0]
+                    
+                    # Clean up markdown formatting
+                    clean_response = clean_response.strip()
+                    
+                    # Ensure code blocks are properly formatted
+                    clean_response = clean_response.replace("```python\n", "\n```python\n")
+                    clean_response = clean_response.replace("```javascript\n", "\n```javascript\n")
+                    clean_response = clean_response.replace("```\n", "\n```\n")
+                    
+                    # Ensure lists have proper spacing
+                    clean_response = clean_response.replace("\n-", "\n\n-")
+                    clean_response = clean_response.replace("\n1.", "\n\n1.")
+                    
+                    # Ensure headings have proper spacing
+                    clean_response = clean_response.replace("\n#", "\n\n#")
+                    
+                    yield clean_response
 
-        # Stream the response
-        while True:
-            response = stream_queue.get()
-            if response is None:
-                break
-            yield response.strip()
+        except Exception as e:
+            logger.error(f"Generation error: {e}")
+            yield f"Error during generation: {str(e)}"
 
         logger.info("Response generation complete")

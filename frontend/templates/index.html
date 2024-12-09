@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MIDAS 2.0</title>
+    
+    <!-- Favicons -->
+    <link rel="apple-touch-icon" sizes="180x180" href="/assets/gfx/apple-touch-icon.png">
+    <link rel="icon" type="image/png" sizes="32x32" href="/assets/gfx/favicon-32x32.png">
+    <link rel="icon" type="image/png" sizes="16x16" href="/assets/gfx/favicon-16x16.png">
+    <link rel="icon" type="image/x-icon" href="/assets/gfx/favicon.ico">
+    
+    <!-- Android/Chrome -->
+    <link rel="manifest" href="/assets/site.webmanifest">
+    <meta name="theme-color" content="#22C55E"><!-- Neon green color -->
+    
+    <!-- Apple specific -->
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="MIDAS 2.0">
+    
+    <!-- Microsoft -->
+    <meta name="msapplication-TileColor" content="#22C55E">
+    <meta name="msapplication-config" content="/assets/browserconfig.xml">
+    
+    <!-- Load Gradio client library -->
+    <script type="module">
+        import { client } from "https://cdn.jsdelivr.net/npm/@gradio/client@0.1.4/dist/index.min.js";
+        
+        async function init() {
+            try {
+                const app = await client("http://127.0.0.1:7860/");
+                const gradioContainer = document.getElementById("gradio-app");
+                gradioContainer.appendChild(app.view);
+            } catch (e) {
+                console.error("Failed to load Gradio app:", e);
+            }
+        }
+        
+        window.addEventListener("load", init);
+    </script>
+</head>
+<body>
+    <div id="gradio-app"></div>
+</body>
+</html>
