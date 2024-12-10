@@ -19,8 +19,7 @@ timeout /t 2 /nobreak > nul
 echo.
 echo Starting the Gradio frontend...
 echo Log messages will appear below:
-echo ----------------------------------------
-start cmd /k "title MIDAS Frontend && python frontend/interface.py"
+start cmd /k "title MIDAS Frontend && python frontend/run.py"
 
 echo.
 echo MIDAS 2.0 is starting up...
@@ -30,8 +29,5 @@ echo.
 echo Press any key to shut down all servers...
 pause
 
-echo.
-echo Shutting down servers...
-taskkill /FI "WindowTitle eq MIDAS Backend" /T /F > nul 2>&1
-taskkill /FI "WindowTitle eq MIDAS Frontend" /T /F > nul 2>&1
-echo Done.
+taskkill /F /FI "WINDOWTITLE eq MIDAS Backend*" /T
+taskkill /F /FI "WINDOWTITLE eq MIDAS Frontend*" /T
