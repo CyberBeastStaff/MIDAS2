@@ -41,6 +41,13 @@ Thumbs.db
 .env.local
 .env.*.local
 
+# Chat history
+chat_history/
+
+# Bot configurations
+bots/
+config/
+
 # Model files
 *.gguf
 *.bin
