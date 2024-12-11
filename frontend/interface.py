@@ -9,6 +9,9 @@ import threading
 from datetime import datetime
 from queue import Queue
 
+# Constants
+BACKEND_URL = "http://localhost:7860"
+
 # Add project root to Python path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -21,124 +24,198 @@ with open('frontend/static/styles.css', 'r') as f:
 
 CUSTOM_CSS += """
 .title {
-    font-size: 2.5em !important;
-    font-weight: 700 !important;
     text-align: center;
-    margin: 20px 0 !important;
-    padding: 10px;
-    color: rgb(34, 197, 94) !important;  /* Neon green color */
-    text-shadow: 0 0 10px rgba(34, 197, 94, 0.3);  /* Subtle glow effect */
-    border-bottom: 2px solid rgb(34, 197, 94);
-}
-
-.sidebar {
-    padding: 20px;
-    background-color: var(--background-fill-primary);
+    color: #10a37f;
+    font-size: 2.5em;
+    margin: 20px 0;
+    font-weight: 600;
+    text-shadow: 1px 1px 2px rgba(0,0,0,0.1);
 }
 
 .chat-title {
+    text-align: left;
+    color: #e5e7eb;
+    font-size: 1.2em;
     margin: 0;
-    padding: 10px;
-    display: flex;
-    align-items: center;
-}
-
-.chat-title-row {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    padding: 10px;
-    border-bottom: 1px solid var(--border-color-primary);
-}
-
-.chat-title-row button {
-    margin-left: 10px;
-}
-
-.chat-container {
-    display: flex;
-    flex-direction: column;
-    height: 100vh;
-    max-height: 100vh;
-    background-color: var(--background-fill-primary);
-}
-
-.chat-messages {
     flex-grow: 1;
-    overflow-y: auto;
-    padding: 20px;
-    margin-bottom: 20px;
 }
 
-.chat-input {
-    padding: 10px 20px;
-    background-color: var(--background-fill-secondary);
-    border-top: 1px solid var(--border-color-primary);
+.chat-controls {
+    display: flex;
+    gap: 8px;
+    align-items: center;
 }
 
-.chat-textbox {
-    border-radius: 8px;
-}
-
-.send-btn {
-    border-radius: 8px;
-    padding: 8px;
-    min-width: 40px;
+.chat-controls button {
+    min-width: 60px;
 }
 
 .control-btn {
     border-radius: 8px;
-    padding: 8px;
+    padding: 6px 12px;
     min-width: 40px;
+    background-color: #2d3748;
+    color: #e5e7eb;
+    border: 1px solid #4a5568;
 }
+
+.control-btn:hover {
+    background-color: #4a5568;
+}
+
+.small-btn {
+    padding: 4px 8px;
+    min-width: 30px;
+    font-size: 0.9em;
+}
+
+/* Dark theme overrides */
+.dark {
+    background-color: #1a202c;
+    color: #e5e7eb;
+}
+
+.dark input, .dark textarea, .dark select {
+    background-color: #2d3748;
+    color: #e5e7eb;
+    border-color: #4a5568;
+}
+
+.dark button {
+    background-color: #2d3748;
+    color: #e5e7eb;
+    border-color: #4a5568;
+}
+
+.dark button:hover {
+    background-color: #4a5568;
+}
+
+.dark .tabs {
+    border-color: #4a5568;
+}
+
+.dark .tab-selected {
+    border-color: #10a37f;
+    color: #10a37f;
+}
+
+.dark .markdown {
+    color: #e5e7eb;
+}
+
+.dark .table {
+    background-color: #2d3748;
+    color: #e5e7eb;
+    border-color: #4a5568;
+}
+
+.dark .table th {
+    background-color: #1a202c;
+    color: #e5e7eb;
+    border-color: #4a5568;
+}
+
+.dark .table td {
+    border-color: #4a5568;
+}
+
 """
 
 def create_interface():
     llm = LLMInterface()
-    available_models = [model.name for model in llm.get_available_models()]
     
-    def create_new_chat():
-        """Create a new chat and return dropdown update, history, and title"""
-        print("[DEBUG] Creating new chat")
+    def get_downloaded_models():
         try:
-            # Create new chat
-            headers = {'Content-Type': 'application/json'}
-            response = requests.post('http://127.0.0.1:7860/api/chats', headers=headers)
+            response = requests.get(f'{BACKEND_URL}/api/models/downloaded')
+            if response.status_code == 200:
+                models = response.json()
+                return [model['name'] for model in models]
+            return []
+        except Exception as e:
+            print(f"[ERROR] Failed to get downloaded models: {e}")
+            return []
+
+    def update_base_model_choices():
+        downloaded_models = get_downloaded_models()
+        if not downloaded_models:  # If no models are downloaded, provide default choices
+            downloaded_models = ["mistral", "llama2", "codellama"]
+        return gr.update(choices=downloaded_models, value=downloaded_models[0] if downloaded_models else None)
+
+    # Model Management Functions
+    def list_available_models():
+        try:
+            response = requests.get(f'{BACKEND_URL}/api/models')
+            if response.status_code == 200:
+                models = response.json()
+                return [
+                    [
+                        model['name'],
+                        model['size'],
+                        "✓" if model['is_downloaded'] else "✗",
+                        "✓" if model['is_loaded'] else "✗"
+                    ]
+                    for model in models
+                ]
+            return []
+        except Exception as e:
+            print(f"[ERROR] Failed to list models: {e}")
+            return []
+
+    def download_model(model_name):
+        try:
+            response = requests.post(f'{BACKEND_URL}/api/models/{model_name.lower()}/download')
+            if response.status_code == 200:
+                return f"Successfully started downloading {model_name}"
+            return f"Failed to download {model_name}: {response.text}"
+        except Exception as e:
+            return f"Error downloading model: {str(e)}"
+
+    def remove_model(model_name):
+        try:
+            response = requests.delete(f'{BACKEND_URL}/api/models/{model_name.lower()}')
+            if response.status_code == 200:
+                return f"Successfully removed {model_name}"
+            return f"Failed to remove {model_name}: {response.text}"
+        except Exception as e:
+            return f"Error removing model: {str(e)}"
+
+    def add_custom_model(name, size, type, url):
+        try:
+            if not all([name, size, type, url]):
+                return "All fields are required"
             
-            if response.status_code != 200:
-                print(f"[ERROR] Failed to create chat: {response.status_code}")
-                print(f"[ERROR] Response: {response.text}")
-                return gr.update(), [], "### Error creating chat"
-                
-            chat_data = response.json()
-            chat_id = chat_data['id']
-            initial_title = "New Chat"
+            data = {
+                "name": name,
+                "size": size,
+                "type": type,
+                "url": url
+            }
             
-            # Update the chat with initial title
-            title_response = requests.put(
-                f'http://127.0.0.1:7860/api/chats/{chat_id}',
-                json={'title': initial_title},
-                headers=headers
+            response = requests.post(
+                f'{BACKEND_URL}/api/models',
+                json=data,
+                headers={'Content-Type': 'application/json'}
             )
             
-            if title_response.status_code != 200:
-                print(f"[ERROR] Failed to set initial title: {title_response.status_code}")
-            
-            # Get updated list of chats
-            choices = list_chats()
-            # Find the matching title for this chat ID
-            selected_title = initial_title
-            
-            return gr.update(choices=choices, value=selected_title), [], f"### {initial_title}"
+            if response.status_code == 200:
+                return "Successfully added new model"
+            return f"Failed to add model: {response.text}"
         except Exception as e:
-            print(f"[ERROR] Error creating chat: {e}")
-            return gr.update(), [], "### Error creating chat"
+            return f"Error adding model: {str(e)}"
+
+    def refresh_model_list():
+        return gr.update(value=list_available_models())
 
     def list_chats():
+        """Get list of available chats"""
         try:
             response = requests.get('http://127.0.0.1:7860/api/chats')
             if response.status_code == 200:
                 chats = response.json()
+                # Sort chats by timestamp if available
+                if chats and 'timestamp' in chats[0]:
+                    chats.sort(key=lambda x: x.get('timestamp', ''), reverse=True)
                 # Store chat_id in the value but only show title in display
                 choices = {chat['title']: f"{chat['title']} ({chat['id']})" for chat in chats}
                 return list(choices.keys())  # Only return the titles
@@ -151,6 +228,7 @@ def create_interface():
             return []
 
     def refresh_chat_list():
+        """Refresh the chat list dropdown"""
         print("[DEBUG] Refreshing chat list")
         choices = list_chats()
         print(f"[DEBUG] Updated chat list: {choices}")
@@ -158,94 +236,183 @@ def create_interface():
 
     def create_title_from_message(message, max_words=3):
         """Create a concise 2-3 word title from the user's message"""
-        try:
-            # Remove special characters and extra spaces
-            clean_msg = ' '.join(''.join(c if c.isalnum() or c.isspace() else ' ' for c in message).split())
-            
-            # Extract key words (skip common words)
-            common_words = {
-                'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by',
-                'is', 'are', 'was', 'were', 'be', 'been', 'being', 'have', 'has', 'had', 'do', 'does',
-                'did', 'will', 'would', 'should', 'could', 'may', 'might', 'must', 'can', 'me', 'my',
-                'mine', 'you', 'your', 'yours', 'he', 'him', 'his', 'she', 'her', 'hers', 'it', 'its',
-                'we', 'us', 'our', 'ours', 'they', 'them', 'their', 'theirs', 'this', 'that', 'these',
-                'those', 'what', 'which', 'who', 'whom', 'whose', 'when', 'where', 'why', 'how'
-            }
-            
-            # Split into words and filter out common words and short words
-            words = [word for word in clean_msg.split() 
-                    if word.lower() not in common_words 
-                    and len(word) > 2]  # Skip very short words
-            
-            # Take first 2-3 meaningful words
-            title_words = words[:max_words]
-            
-            # Capitalize each word
-            title = ' '.join(word.capitalize() for word in title_words)
-            
-            # If no meaningful words found or title too short, use first few words of message
-            if len(title) < 3:
-                # Take first few words of original message
-                title = ' '.join(message.split()[:max_words]).capitalize()
-            
-            # Ensure title isn't too long
-            if len(title) > 30:
-                title = title[:27] + "..."
-            
-            print(f"[DEBUG] Generated title from message: {title}")
-            return title
-        except Exception as e:
-            print(f"[ERROR] Failed to generate title from message: {e}")
-            return f"Chat {datetime.now().strftime('%I:%M %p')}"
+        # Remove special characters and extra spaces
+        clean_msg = ' '.join(message.split())
+        words = clean_msg.split()
+        if len(words) <= max_words:
+            return clean_msg
+        return ' '.join(words[:max_words]) + '...'
 
-    def update_chat_title_async(chat_id, new_title, update_queue):
-        """Update chat title in a separate thread"""
-        print(f"[DEBUG] Async title update started for chat {chat_id}")
+    def create_new_chat():
+        """Create a new chat and return its title"""
         try:
+            # Create new chat with headers
             headers = {'Content-Type': 'application/json'}
-            response = requests.put(
-                f'http://127.0.0.1:7860/api/chats/{chat_id}',
-                json={'title': new_title},
+            initial_title = f"Chat {datetime.now().strftime('%I:%M %p')}"
+            
+            response = requests.post(
+                'http://127.0.0.1:7860/api/chats',
+                json={'title': initial_title, 'temporary': True},  # Mark as temporary
                 headers=headers
             )
-            print(f"[DEBUG] Async title update response: {response.status_code}")
             
             if response.status_code == 200:
-                print("[DEBUG] Title updated successfully in background")
-                # Put the update info in the queue
-                update_queue.put(('title_update', new_title, chat_id))
-            else:
-                print(f"[ERROR] Failed to update title: {response.status_code} - {response.text}")
-        except Exception as e:
-            print(f"[ERROR] Error in async title update: {e}")
-
-    def update_chat_title(chat_id, new_title):
-        """Update chat title and refresh the dropdown"""
-        print(f"[DEBUG] Updating chat {chat_id} title to: {new_title}")
-        try:
-            headers = {'Content-Type': 'application/json'}
-            response = requests.put(
-                f'http://127.0.0.1:7860/api/chats/{chat_id}',
-                json={'title': new_title},
-                headers=headers
-            )
-            print(f"[DEBUG] Title update response: {response.status_code}")
-            
-            if response.status_code == 200:
-                print("[DEBUG] Title updated successfully, refreshing chat list")
+                chat_data = response.json()
+                chat_id = chat_data['id']
+                
+                # Update chat list and return new state
                 choices = list_chats()
-                return gr.update(choices=choices, value=new_title)
+                return gr.update(choices=choices, value=initial_title), [], f"### {initial_title}"
             else:
-                print(f"[ERROR] Failed to update title: {response.status_code} - {response.text}")
-                return gr.update()
+                print(f"[ERROR] Failed to create chat: {response.status_code}")
+                print(f"[ERROR] Response: {response.text}")
+                return gr.update(), [], "### Error creating chat"
         except Exception as e:
-            print(f"[ERROR] Error updating chat title: {e}")
-            return gr.update()
+            print(f"[ERROR] Failed to create chat: {e}")
+            return gr.update(), [], "### Error creating chat"
 
-    def load_chat(chat_selection):
+    def submit_message(msg, history, chat_selection, bot_selection, temperature, max_new_tokens, top_p, top_k, repetition_penalty):
+        """Submit a message and get streaming response"""
+        if not msg or not chat_selection:
+            return history, ""
+            
+        print("\n[DEBUG] Processing new message...")
+        print(f"[DEBUG] Message: {msg[:50]}...")
+        print(f"[DEBUG] Selected bot: {bot_selection}")
+        
+        # Format user message
+        formatted_msg = msg.strip()
+        history = history + [[formatted_msg, ""]]  # Initialize with empty response
+        print("[DEBUG] Added user message to history")
+        yield history, ""  # Show user message immediately
+        
+        try:
+            # Get chat ID from selection
+            print("[DEBUG] Fetching chat information...")
+            response = requests.get('http://127.0.0.1:7860/api/chats')
+            chats = response.json() if response.status_code == 200 else []
+            selected_chat = next((chat for chat in chats if chat['title'] == chat_selection), None)
+            
+            if not selected_chat:
+                print(f"[ERROR] Could not find chat for title: {chat_selection}")
+                history[-1][1] = "Error: Could not find chat"
+                yield history, ""
+                return
+                
+            chat_id = selected_chat['id']
+            print(f"[DEBUG] Using chat ID: {chat_id}")
+            
+            # Save the user's message
+            headers = {'Content-Type': 'application/json'}
+            if chat_id:
+                try:
+                    print("[DEBUG] Saving user message to chat history...")
+                    # Mark chat as permanent since a message was sent
+                    requests.put(
+                        f'http://127.0.0.1:7860/api/chats/{chat_id}',
+                        json={'temporary': False},
+                        headers=headers
+                    )
+                    
+                    # Save the message
+                    response = requests.post(
+                        f'http://127.0.0.1:7860/api/chats/{chat_id}/messages',
+                        json={'role': 'user', 'content': formatted_msg},
+                        headers=headers
+                    )
+                    print(f"[DEBUG] Message saved. Status: {response.status_code}")
+                except Exception as e:
+                    print(f"[ERROR] Failed to save user message: {e}")
+            
+            # Get streaming response
+            try:
+                print("[DEBUG] Requesting bot response...")
+                print(f"[DEBUG] Parameters: temp={temperature}, tokens={max_new_tokens}, top_p={top_p}, top_k={top_k}")
+                
+                response = requests.post(
+                    f'http://127.0.0.1:7860/api/bots/{bot_selection}/chat',
+                    json={
+                        'message': formatted_msg,
+                        'parameters': {
+                            'temperature': temperature,
+                            'max_new_tokens': max_new_tokens,
+                            'top_p': top_p,
+                            'top_k': top_k,
+                            'repetition_penalty': repetition_penalty
+                        }
+                    },
+                    headers=headers,
+                    stream=True
+                )
+                
+                if response.status_code == 200:
+                    print("[DEBUG] Starting to process streaming response...")
+                    token_count = 0
+                    current_response = ""
+                    
+                    # Process streaming response
+                    for line in response.iter_lines():
+                        if line and line.startswith(b'data: '):
+                            try:
+                                # Remove 'data: ' prefix and parse JSON
+                                json_str = line.decode()[6:]
+                                print(f"[DEBUG] Raw JSON: {json_str}")
+                                data = json.loads(json_str)
+                                print(f"[DEBUG] Decoded data: {data}")
+                                
+                                if 'token' in data:
+                                    token = data['token']
+                                    print(f"[DEBUG] Got token: {token}")
+                                    token_count += 1
+                                    if token_count % 20 == 0:
+                                        print(f"[DEBUG] Received {token_count} tokens...")
+                                    
+                                    current_response += token
+                                    history[-1][1] = current_response
+                                    yield history, ""
+                                    
+                            except json.JSONDecodeError as e:
+                                print(f"[ERROR] Failed to decode JSON: {e}")
+                                print(f"[DEBUG] Problem line: {line}")
+                                continue
+                            except Exception as e:
+                                print(f"[ERROR] Error processing token: {e}")
+                                continue
+                    
+                    print(f"[DEBUG] Response complete. Total tokens: {token_count}")
+                    print(f"[DEBUG] Final response: {current_response[:100]}...")
+                    
+                    # Save the complete response
+                    if chat_id and current_response:
+                        print("[DEBUG] Saving complete response to chat history...")
+                        save_response = requests.post(
+                            f'http://127.0.0.1:7860/api/chats/{chat_id}/messages',
+                            json={'role': 'assistant', 'content': current_response},
+                            headers=headers
+                        )
+                        print(f"[DEBUG] Response saved. Status: {save_response.status_code}")
+                        
+                else:
+                    error_msg = f"Error: Failed to get response (Status: {response.status_code})"
+                    print(f"[ERROR] {error_msg}")
+                    history[-1][1] = error_msg
+                    yield history, ""
+                    
+            except Exception as e:
+                print(f"[ERROR] Error in streaming response: {e}")
+                history[-1][1] = f"Error: {str(e)}"
+                yield history, ""
+                
+        except Exception as e:
+            print(f"[ERROR] Error in submit_message: {e}")
+            history[-1][1] = f"Error: {str(e)}"
+            yield history, ""
+
+    def load_selected_chat(chat_selection):
+        """Load a selected chat from the dropdown menu"""
         if not chat_selection:
-            print("No chat selected")  # Debug print
-            return None
+            return None, "### New Chat"
+        
         try:
             # Get chat ID mapping
             response = requests.get('http://127.0.0.1:7860/api/chats')
@@ -255,13 +422,15 @@ def create_interface():
             
             if not chat_id:
                 print(f"[ERROR] Could not find chat ID for title: {chat_selection}")
-                return None
+                return None, "### Error Loading Chat"
             
-            print(f"Loading chat: {chat_id}")  # Debug print
+            print(f"\n[DEBUG] Loading chat {chat_id}")
+            
             response = requests.get(f'http://127.0.0.1:7860/api/chats/{chat_id}')
             if response.status_code != 200:
-                print(f"Error loading chat: {response.status_code} - {response.text}")
-                return None
+                print(f"[ERROR] Failed to load chat: {response.status_code}")
+                return None, "### Error Loading Chat"
+            
             chat_data = response.json()
             history = []
             messages = chat_data.get('messages', [])
@@ -277,27 +446,32 @@ def create_interface():
                 content = msg.get('content', '')
                 
                 if role == 'user':
-                    if current_user_msg is not None:
-                        # If we have an unpaired user message, add it with None response
-                        history.append([current_user_msg, None])
                     current_user_msg = content
                 elif role == 'assistant' and current_user_msg is not None:
-                    # Pair assistant response with the current user message
                     history.append([current_user_msg, content])
                     current_user_msg = None
+                elif role == 'assistant' and not history:
+                    # First message is from assistant (greeting)
+                    history.append([None, content])
                 elif role == 'assistant':
-                    # Handle standalone assistant messages (like greetings)
+                    # Standalone assistant message
                     history.append([None, content])
             
             # Add any remaining unpaired user message
             if current_user_msg is not None:
                 history.append([current_user_msg, None])
             
-            print(f"Loaded chat history: {history}")  # Debug print
-            return history
+            if not history:
+                # If no messages, show greeting
+                history = [[None, "Hello! I'm MIDAS, your AI assistant. How can I help you today?"]]
+            
+            title = chat_data.get('title', 'Chat')
+            print(f"[DEBUG] Loaded chat with {len(history)} messages")
+            return history, f"### {title}"
+            
         except Exception as e:
-            print(f"Error loading chat: {e}")
-            return None
+            print(f"[ERROR] Error loading chat: {e}")
+            return None, "### Error Loading Chat"
 
     def delete_chat(chat_selection):
         if not chat_selection:
@@ -474,491 +648,548 @@ def create_interface():
             history[-1][1] = "Error generating response. Please try again."
             yield history
 
-    def change_model(model_name):
-        if llm.load_model(model_name.lower()):
-            return f"Model: {model_name}\nStatus: Active ●"
-        return f"Failed to load {model_name}"
-
-    def refresh_system_information():
-        return get_system_info()
-
-    def get_chat_title(chat_selection):
-        """Extract title from chat selection"""
-        if not chat_selection:
-            return ""
-        # Remove the chat ID in parentheses
-        return chat_selection.rsplit(' (', 1)[0]
-
-    def user(user_message, history, chat_selection):
+    def list_bots():
+        """Get list of available bots"""
         try:
-            print(f"\n[DEBUG] Processing user message: {user_message[:50]}...")
-            current_title = None  # Initialize as None
-            headers = {'Content-Type': 'application/json'}
-            base_url = 'http://127.0.0.1:7860/api'
-            
-            if not chat_selection:
-                print("[DEBUG] No chat selected, creating new chat")
-                dropdown_update, history, current_title = create_new_chat()
-                # Get chat ID for the new chat
-                response = requests.get(f'{base_url}/chats')
-                if response.status_code == 200:
-                    chats = response.json()
-                    # Find the most recently created chat
-                    if chats:
-                        latest_chat = max(chats, key=lambda x: x['created_at'])
-                        chat_id = latest_chat['id']
-                    else:
-                        print("[ERROR] No chats found after creation")
-                        return "", history + [[user_message, None]], gr.update(), "### Error"
-                else:
-                    print(f"[ERROR] Failed to get chats: {response.status_code}")
-                    return "", history + [[user_message, None]], gr.update(), "### Error"
-            else:
-                # Get chat ID for existing chat
-                response = requests.get(f'{base_url}/chats')
-                if response.status_code == 200:
-                    chats = response.json()
-                    title_to_id = {chat['title']: chat['id'] for chat in chats}
-                    chat_id = title_to_id.get(chat_selection)
-                    if not chat_id:
-                        print(f"[ERROR] Could not find chat ID for title: {chat_selection}")
-                        return "", history + [[user_message, None]], gr.update(), "### Error"
-                else:
-                    print(f"[ERROR] Failed to get chats: {response.status_code}")
-                    return "", history + [[user_message, None]], gr.update(), "### Error"
-            
-            print(f"[DEBUG] Using chat ID: {chat_id}")
-            
-            # Add new message first
-            print("[DEBUG] Adding message to chat history")
-            message_response = requests.post(
-                f'{base_url}/chats/{chat_id}/messages',
-                json={'role': 'user', 'content': user_message},
-                headers=headers
-            )
-            if message_response.status_code != 200:
-                print(f"[ERROR] Failed to save message: {message_response.status_code}")
-                print(f"[ERROR] Response: {message_response.text}")
-                return "", history + [[user_message, None]], gr.update(), current_title or "### Error"
-            
-            # Then get updated chat data
-            chat_response = requests.get(f'{base_url}/chats/{chat_id}')
-            if chat_response.status_code != 200:
-                print(f"[ERROR] Failed to get chat: {chat_response.status_code}")
-                print(f"[ERROR] Response: {chat_response.text}")
-                return "", history + [[user_message, None]], gr.update(), current_title or "### Error"
-                
-            chat_data = chat_response.json()
-            messages = chat_data.get('messages', [])
-            
-            # Convert messages to history format
-            history = []
-            current_user_msg = None
-            
-            for msg in messages:
-                role = msg.get('role')
-                content = msg.get('content', '')
-                
-                if role == 'user':
-                    current_user_msg = content
-                elif role == 'assistant' and current_user_msg is not None:
-                    history.append([current_user_msg, content])
-                    current_user_msg = None
-                elif role == 'assistant' and not history:
-                    # First message is from assistant (greeting)
-                    history.append([None, content])
-                elif role == 'assistant':
-                    # Standalone assistant message
-                    history.append([None, content])
-            
-            # Add any remaining unpaired user message
-            if current_user_msg is not None:
-                history.append([current_user_msg, None])
-            
-            # Check if this is the first user message for title update
-            user_messages = [m for m in messages if m.get('role') == 'user']
-            if len(user_messages) == 1:  # This was the first user message
-                new_title = create_title_from_message(user_message)
-                print(f"[DEBUG] Generated new title: {new_title}")
-                
-                # Update title in backend
-                print(f"[DEBUG] Updating title in backend")
-                title_response = requests.put(
-                    f'{base_url}/chats/{chat_id}',
-                    json={'title': new_title},
-                    headers=headers
-                )
-                
-                if title_response.status_code == 200:
-                    print("[DEBUG] Title updated successfully")
-                    # Update frontend
-                    choices = list_chats()
-                    dropdown_update = gr.update(choices=choices, value=new_title)
-                    current_title = f"### {new_title}"
-                else:
-                    print(f"[ERROR] Failed to update title: {title_response.status_code}")
-                    print(f"[ERROR] Response: {title_response.text}")
-            else:
-                # For existing chats, keep the current title
-                current_title = f"### {chat_data.get('title', 'Chat')}"
-                dropdown_update = gr.update()  # No changes needed for existing chat
-            
-            print(f"[DEBUG] Returning updates - Title: {current_title}")
-            return "", history, dropdown_update, current_title
-            
+            response = requests.get(f"{BACKEND_URL}/api/bots")
+            if response.status_code == 200:
+                bots = response.json()
+                return [bot["name"] for bot in bots]
+            return []
         except Exception as e:
-            print(f"[ERROR] Error in user function: {e}")
-            import traceback
-            traceback.print_exc()
-            return "", history + [[user_message, None]], gr.update(), "### Error"
+            print(f"Error listing bots: {e}")
+            return []
 
-    def load_selected_chat(chat_selection):
-        """Load selected chat and update interface"""
-        print(f"[DEBUG] Loading selected chat: {chat_selection}")
-        if not chat_selection:
-            # Reset to new chat state
-            return (
-                [[None, "Hello! I'm MIDAS, your AI assistant. How can I help you today?"]],
-                "### New Chat"
-            )
-        
+    def get_bot_details(bot_name):
+        """Get details for a specific bot"""
         try:
-            # Get chat ID mapping
-            response = requests.get('http://127.0.0.1:7860/api/chats')
-            chats = response.json() if response.status_code == 200 else []
-            title_to_id = {chat['title']: chat['id'] for chat in chats}
-            chat_id = title_to_id.get(chat_selection)
-            
-            if not chat_id:
-                print(f"[ERROR] Could not find chat ID for title: {chat_selection}")
-                return None, "### Error Loading Chat"
-            
-            print(f"[DEBUG] Fetching chat {chat_id}")
-            
-            response = requests.get(f'http://127.0.0.1:7860/api/chats/{chat_id}')
-            if response.status_code != 200:
-                print(f"[ERROR] Failed to fetch chat: {response.status_code}")
-                return None, "### Error Loading Chat"
-            
-            chat_data = response.json()
-            history = []
-            messages = chat_data.get('messages', [])
-            
-            # Sort messages by timestamp
-            if messages and 'timestamp' in messages[0]:
-                messages.sort(key=lambda x: x.get('timestamp', ''))
-            
-            # Group messages into pairs
-            current_user_msg = None
-            for msg in messages:
-                role = msg.get('role')
-                content = msg.get('content', '')
-                
-                if role == 'user':
-                    current_user_msg = content
-                elif role == 'assistant' and current_user_msg is not None:
-                    history.append([current_user_msg, content])
-                    current_user_msg = None
-                elif role == 'assistant' and not history:
-                    # First message is from assistant (greeting)
-                    history.append([None, content])
-                elif role == 'assistant':
-                    # Standalone assistant message
-                    history.append([None, content])
-            
-            # Add any remaining unpaired user message
-            if current_user_msg is not None:
-                history.append([current_user_msg, None])
-            
-            if not history:
-                # If no messages, show greeting
-                history = [[None, "Hello! I'm MIDAS, your AI assistant. How can I help you today?"]]
-            
-            title = chat_data.get('title', 'Chat')
-            print(f"[DEBUG] Loaded chat with {len(history)} messages")
-            return history, f"### {title}"
-            
+            # Find bot ID from name
+            response = requests.get(f"{BACKEND_URL}/api/bots")
+            if response.status_code == 200:
+                bots = response.json()
+                bot = next((b for b in bots if b["name"] == bot_name), None)
+                if bot:
+                    return bot
+            return None
         except Exception as e:
-            print(f"[ERROR] Error loading chat: {e}")
-            return None, "### Error Loading Chat"
+            print(f"Error getting bot details: {e}")
+            return None
 
-    def process_bot_response(chat_selection, history):
-        if not chat_selection:
-            return history
-        
+    def create_new_bot(name, description, greeting, base_model, system_prompt, temp, max_tokens, top_p_val, top_k_val, rep_pen):
+        """Create a new bot or update an existing one"""
         try:
-            # Get chat ID mapping
-            response = requests.get('http://127.0.0.1:7860/api/chats')
-            chats = response.json() if response.status_code == 200 else []
-            title_to_id = {chat['title']: chat['id'] for chat in chats}
-            chat_id = title_to_id.get(chat_selection)
+            # Check if we're editing an existing bot
+            existing_bot = get_bot_details(name)
+            is_update = existing_bot is not None
             
-            if not chat_id:
-                print(f"[ERROR] Could not find chat ID for title: {chat_selection}")
-                return history
+            data = {
+                "name": name,
+                "description": description or "No description provided",
+                "greeting_message": greeting,
+                "base_model": base_model,
+                "system_prompt": system_prompt,
+                "parameters": {
+                    "temperature": temp,
+                    "max_new_tokens": max_tokens,
+                    "top_p": top_p_val,
+                    "top_k": top_k_val,
+                    "repetition_penalty": rep_pen
+                }
+            }
             
-            print(f"\n[DEBUG] Processing message for chat {chat_id}")
-            history[-1][1] = ""
-            full_response = ""
-            title_updated = False
-            current_title = None
-            
-            # Get the last user message
-            last_user_message = history[-1][0] if history and history[-1] else None
-            if not last_user_message:
-                print("[ERROR] No user message found in history")
-                return history
-                
-            # Send the message and get streaming response
-            try:
-                # First, save the user message
-                message_response = requests.post(
-                    f'http://127.0.0.1:7860/api/chats/{chat_id}/messages',
-                    json={'role': 'user', 'content': last_user_message},
+            if is_update:
+                # Update existing bot
+                response = requests.put(
+                    f"{BACKEND_URL}/api/bots/{name.lower()}",
+                    json=data,
                     headers={'Content-Type': 'application/json'}
                 )
-                
-                if message_response.status_code != 200:
-                    print(f"[ERROR] Failed to save user message: {message_response.status_code}")
-                    print(f"[ERROR] Response: {message_response.text}")
-                    return history
-                
-                # Now generate the response
-                for chunk in llm.generate_response(last_user_message, history[:-1]):
-                    if chunk:
-                        full_response = chunk
-                        history[-1][1] = full_response
-                        yield history
-                
-                # Save the complete response
-                if full_response:
-                    save_response = requests.post(
-                        f'http://127.0.0.1:7860/api/chats/{chat_id}/messages',
-                        json={'role': 'assistant', 'content': full_response},
-                        headers={'Content-Type': 'application/json'}
-                    )
-                    if save_response.status_code != 200:
-                        print(f"[ERROR] Failed to save response: {save_response.status_code}")
-                        print(f"[ERROR] Response: {save_response.text}")
-                
-                # Generate and update title if this is the first user message
-                chat_response = requests.get(f'http://127.0.0.1:7860/api/chats/{chat_id}')
-                if chat_response.status_code == 200:
-                    chat_data = chat_response.json()
-                    messages = chat_data.get('messages', [])
-                    user_messages = [m for m in messages if m.get('role') == 'user']
-                    
-                    if len(user_messages) == 1:  # This was the first user message
-                        new_title = create_title_from_message(last_user_message)
-                        print(f"[DEBUG] Updating title to: {new_title}")
-                        
-                        title_response = requests.put(
-                            f'http://127.0.0.1:7860/api/chats/{chat_id}',
-                            json={'title': new_title},
-                            headers={'Content-Type': 'application/json'}
-                        )
-                        
-                        if title_response.status_code == 200:
-                            print("[DEBUG] Title updated successfully")
-                            choices = list_chats()
-                            chat_history_dropdown.update(choices=choices, value=new_title)
-                            chat_title_display.update(value=f"### {new_title}")
-                            title_updated = True
-                        else:
-                            print(f"[ERROR] Failed to update title: {title_response.status_code}")
-                
-            except Exception as e:
-                print(f"[ERROR] Error processing response: {e}")
-                import traceback
-                traceback.print_exc()
-                if not history[-1][1]:
-                    history[-1][1] = "Error: Failed to process response"
-                return history
+            else:
+                # Create new bot
+                response = requests.post(
+                    f"{BACKEND_URL}/api/bots",
+                    json=data,
+                    headers={'Content-Type': 'application/json'}
+                )
             
+            if response.status_code == 200:
+                message = "Bot updated successfully" if is_update else "Bot created successfully"
+                gr.Info(message)
+                return gr.update(value=""), gr.update(choices=list_bots(), value=name)
+            else:
+                error_msg = response.json().get('error', 'Unknown error')
+                gr.Warning(f"Failed to {'update' if is_update else 'create'} bot: {error_msg}")
+                return gr.update(), gr.update()
+                
+        except Exception as e:
+            gr.Warning(f"Error {'updating' if is_update else 'creating'} bot: {str(e)}")
+            return gr.update(), gr.update()
+
+    def delete_current_bot(bot_name):
+        """Delete the currently selected bot"""
+        if not bot_name or bot_name == "MIDAS40":
+            return gr.Warning("Cannot delete the default MIDAS40 bot"), bot_dropdown.choices
+            
+        try:
+            # Get bot ID from name
+            bot = get_bot_details(bot_name)
+            if not bot:
+                return gr.Warning("Bot not found"), bot_dropdown.choices
+                
+            response = requests.delete(f"{BACKEND_URL}/api/bots/{bot['id']}")
+            if response.status_code == 200:
+                return gr.Info("Bot deleted successfully"), list_bots()
+            else:
+                return gr.Warning(f"Failed to delete bot: {response.json().get('error', 'Unknown error')}"), bot_dropdown.choices
+        except Exception as e:
+            return gr.Warning(f"Error deleting bot: {str(e)}"), bot_dropdown.choices
+
+    def update_parameters(bot_name):
+        if not bot_name:
+            return [0.7, 4096, 0.95, 50, 1.1]  # Default values
+            
+        bot = get_bot_details(bot_name)
+        if not bot:
+            return None
+                
+        return [
+            bot["parameters"]["temperature"],
+            bot["parameters"]["max_new_tokens"],
+            bot["parameters"]["top_p"],
+            bot["parameters"]["top_k"],
+            bot["parameters"]["repetition_penalty"]
+        ]
+
+    def process_message(message, history, bot_name, temp, max_tokens, top_p_val, top_k_val, rep_penalty):
+        """Process a chat message using the selected bot and parameters"""
+        if not message or not bot_name:
             return history
+            
+        try:
+            # Get bot details
+            bot = get_bot_details(bot_name)
+            if not bot:
+                history.append((message, "Error: Selected bot not found"))
+                return history
+                
+            # Prepare the chat request
+            data = {
+                "messages": [{"role": "user", "content": message}],
+                "bot_id": bot["id"],
+                "parameters": {
+                    "temperature": temp,
+                    "max_new_tokens": max_tokens,
+                    "top_p": top_p_val,
+                    "top_k": top_k_val,
+                    "repetition_penalty": rep_penalty
+                }
+            }
+            
+            # Add chat history
+            for user_msg, assistant_msg in history:
+                data["messages"].insert(0, {"role": "assistant", "content": assistant_msg})
+                data["messages"].insert(0, {"role": "user", "content": user_msg})
+            
+            # Send chat request
+            response = requests.post(f"{BACKEND_URL}/api/chat", json=data)
+            if response.status_code != 200:
+                history.append((message, f"Error: {response.json().get('error', 'Failed to process message')}"))
+                return history
+                
+            # Add response to history
+            assistant_message = response.json().get("response", "Error: No response received")
+            history.append((message, assistant_message))
             
         except Exception as e:
-            print(f"[ERROR] Bot response error: {e}")
-            import traceback
-            traceback.print_exc()
-            if not history[-1][1]:
-                history[-1][1] = "Error: Failed to process response"
-            return history
+            history.append((message, f"Error: {str(e)}"))
+            
+        return history
 
+    def switch_to_bot_config():
+        return {
+            chat_panel: gr.update(visible=False),
+            bot_config_panel: gr.update(visible=True)
+        }
+            
+    def switch_to_chat():
+        return {
+            chat_panel: gr.update(visible=True),
+            bot_config_panel: gr.update(visible=False)
+        }
+            
+    def update_bot_config(bot_name):
+        if not bot_name or bot_name == "Create New Bot":
+            return {
+                new_bot_name: gr.update(value=""),
+                bot_description: gr.update(value=""),
+                greeting_message: gr.update(value="Hello! How can I help you today?"),
+                base_model: gr.update(value="mistral"),
+                system_prompt: gr.update(value=""),
+                temperature: gr.update(value=0.7),
+                max_new_tokens: gr.update(value=4096),
+                top_p: gr.update(value=0.95),
+                top_k: gr.update(value=50),
+                repetition_penalty: gr.update(value=1.1),
+                save_bot_btn: gr.update(value="Create Bot")
+            }
+            
+        bot = get_bot_details(bot_name)
+        if not bot:
+            return None
+                
+        return {
+            new_bot_name: gr.update(value=bot["name"]),
+            bot_description: gr.update(value=bot.get("description", "")),
+            greeting_message: gr.update(value=bot.get("greeting_message", "Hello! How can I help you today?")),
+            base_model: gr.update(value=bot.get("base_model", "mistral")),
+            system_prompt: gr.update(value=bot["system_prompt"]),
+            temperature: gr.update(value=bot["parameters"]["temperature"]),
+            max_new_tokens: gr.update(value=bot["parameters"]["max_new_tokens"]),
+            top_p: gr.update(value=bot["parameters"]["top_p"]),
+            top_k: gr.update(value=bot["parameters"]["top_k"]),
+            repetition_penalty: gr.update(value=bot["parameters"]["repetition_penalty"]),
+            save_bot_btn: gr.update(value="Update Bot")
+        }
+
+    def process_response(response):
+        # Process and format the response
+        # Add your response processing logic here
+        return response
+
+    # Create the interface
     with gr.Blocks(
         css=CUSTOM_CSS,
-        theme=gr.themes.Base(primary_hue="green", neutral_hue="slate", font=["Inter", "ui-sans-serif", "system-ui"]),
-        title="MIDAS 2.0"
+        theme=gr.themes.Soft(
+            primary_hue="green",
+            neutral_hue="slate",
+            font=["Inter", "ui-sans-serif", "system-ui"],
+            text_size=gr.themes.sizes.text_md
+        )
     ) as interface:
-        # Create initial chat
-        initial_response = requests.post('http://127.0.0.1:7860/api/chats',
-                                      json={'title': 'New Chat'},
-                                      headers={'Content-Type': 'application/json'})
-        initial_chat_id = initial_response.json()['id'] if initial_response.status_code == 200 else None
-        initial_choices = list_chats()
+        gr.HTML("<h1 class='title'>MIDAS 2.0</h1>")
         
-        # Left sidebar
-        with gr.Row():
-            with gr.Column(scale=1, elem_classes="sidebar"):
-                gr.Markdown("# MIDAS 2.0", elem_classes="title")
-                
-                # Chat History Section
-                new_chat_btn = gr.Button("+ New Chat")
-                chat_history_dropdown = gr.Dropdown(
-                    choices=initial_choices,
-                    value=initial_choices[0] if initial_choices else None,
-                    label="Chat History",
-                    container=True
-                )
-                
-                gr.Markdown("#### Model Selection")
-                model_dropdown = gr.Dropdown(
-                    choices=available_models,
-                    value=available_models[0] if available_models else None,
-                    label="",
-                    container=True
-                )
-                
-                with gr.Accordion("System Status", open=False):
-                    system_info = gr.TextArea(
-                        value=get_system_info(),
-                        label="",
-                        interactive=False,
-                        container=True
-                    )
-                    refresh_sys_info = gr.Button("↻ Refresh", size="sm")
-                
-                with gr.Accordion("Generation Settings", open=False):
-                    temperature = gr.Slider(
-                        minimum=0.1, maximum=2.0, value=0.7, step=0.1,
-                        label="Response Creativity",
-                        interactive=True,
-                        container=True
-                    )
-                    max_new_tokens = gr.Slider(
-                        minimum=50, maximum=2000, value=1000, step=50,
-                        label="Maximum Response Length",
-                        interactive=True,
-                        container=True
-                    )
-                    top_p = gr.Slider(
-                        minimum=0.1, maximum=1.0, value=0.95, step=0.05,
-                        label="Response Focus",
-                        interactive=True,
-                        container=True
-                    )
-                    top_k = gr.Slider(
-                        minimum=1, maximum=100, value=50, step=1,
-                        label="Response Variety",
-                        interactive=True,
-                        container=True
-                    )
-                    rep_pen = gr.Slider(
-                        minimum=1.0, maximum=2.0, value=1.2, step=0.1,
-                        label="Repetition Prevention",
-                        interactive=True,
-                        container=True
-                    )
-
-            # Main chat area
-            with gr.Column(scale=4):
-                # Chat title and action buttons row
-                with gr.Row(elem_classes="chat-title-row"):
-                    chat_title_display = gr.Markdown("### New Chat")
-                    delete_btn = gr.Button("Delete", size="sm", variant="secondary")
-                    rename_btn = gr.Button("Rename", size="sm", variant="secondary")
-
-                # Chat interface
-                chatbot = gr.Chatbot(
-                    value=[[None, "Hello! I'm MIDAS, your AI assistant. How can I help you today?"]],
-                    height="70vh",
-                    show_label=False,
-                    container=False,
-                    elem_classes=["chat-messages", "dark"],
-                    bubble_full_width=False,
-                    render_markdown=True
-                )
-                
-                with gr.Row(elem_classes="chat-input"):
-                    with gr.Column(scale=10):
-                        msg = gr.Textbox(
-                            show_label=False,
-                            placeholder="Type your message here...",
-                            container=False,
-                            elem_classes="chat-textbox"
+        with gr.Tabs() as tabs:
+            with gr.Tab("Chat"):
+                with gr.Row():
+                    # Left sidebar
+                    with gr.Column(scale=1):
+                        # Bot selection
+                        bot_dropdown = gr.Dropdown(
+                            choices=list_bots(),
+                            label="Select Bot",
+                            value="MIDAS40" if "MIDAS40" in list_bots() else None
                         )
-                    with gr.Column(scale=1, min_width=50):
-                        clear = gr.Button("↺", variant="secondary", elem_classes="control-btn")
-                    with gr.Column(scale=1, min_width=50):
-                        submit = gr.Button("→", variant="primary", elem_classes="send-btn")
-                
-                with gr.Row(elem_classes="chat-controls"):
-                    pass
-        
-        def create_new_chat():
-            try:
-                headers = {'Content-Type': 'application/json'}
-                response = requests.post('http://127.0.0.1:7860/api/chats', headers=headers)
-                
-                if response.status_code != 200:
-                    print(f"[ERROR] Failed to create chat: {response.status_code}")
-                    print(f"[ERROR] Response: {response.text}")
-                    return gr.update(), [], "### Error creating chat"
+                        edit_bot_btn = gr.Button("✏️ Edit/Create New Bot")
+                        
+                        # Chat history
+                        with gr.Accordion("Chat History", open=False):
+                            chat_history_dropdown = gr.Dropdown(
+                                choices=list_chats(),
+                                label="Select Chat",
+                                interactive=True,
+                                allow_custom_value=False,
+                                value=None
+                            )
+                            chat_title_display = gr.Markdown("### New Chat", elem_id="chat-title")
+                            with gr.Row():
+                                new_chat_btn = gr.Button("New", size="sm")
+                                rename_btn = gr.Button("Rename", size="sm")
+                                delete_btn = gr.Button("Delete", size="sm", variant="stop")
+                        
+                    # Main area - switchable between chat and bot config
+                    with gr.Column(scale=3):
+                        # Chat Panel
+                        with gr.Column(visible=True) as chat_panel:
+                            # Chat title and controls
+                            with gr.Row():
+                                chat_title_display = gr.Markdown("### New Chat", elem_id="chat-title", elem_classes="chat-title")
+                                with gr.Row():
+                                    rename_btn = gr.Button("Rename", size="sm")
+                                    delete_btn = gr.Button("Delete", size="sm", variant="stop")
+
+                            # Chat interface
+                            chatbot = gr.Chatbot(
+                                [],
+                                elem_id="chatbot",
+                                height=700,
+                                render_markdown=True,
+                                show_copy_button=True,
+                                bubble_full_width=False,
+                                show_share_button=False
+                            )
+                            with gr.Row():
+                                with gr.Column(scale=20):
+                                    msg = gr.Textbox(
+                                        show_label=False,
+                                        placeholder="Type your message here...",
+                                        container=False
+                                    )
+                                with gr.Column(scale=1, min_width=50):
+                                    submit_btn = gr.Button("Send", variant="primary")
+                            with gr.Row():
+                                clear = gr.Button("Clear", size="sm", scale=0.15)
+                            
+                        # Bot Configuration Panel
+                        with gr.Column(visible=False) as bot_config_panel:
+                            gr.Markdown("## Bot Configuration")
+                            config_bot_dropdown = gr.Dropdown(
+                                choices=["Create New Bot"] + list_bots(),
+                                label="Select Bot to Edit",
+                                value="Create New Bot"
+                            )
+                            
+                            with gr.Row():
+                                with gr.Column():
+                                    new_bot_name = gr.Textbox(
+                                        label="Bot Name",
+                                        placeholder="Enter a name for your bot..."
+                                    )
+                                    bot_description = gr.Textbox(
+                                        label="Bot Description",
+                                        placeholder="Describe what this bot is designed for...",
+                                        lines=2
+                                    )
+                                    greeting_message = gr.Textbox(
+                                        label="Greeting Message",
+                                        placeholder="Enter the message the bot will use to greet users...",
+                                        value="Hello! How can I help you today?"
+                                    )
+                                    base_model = gr.Dropdown(
+                                        choices=get_downloaded_models() or ["mistral", "llama2", "codellama"],
+                                        label="Base Model",
+                                        value=lambda: (get_downloaded_models() or ["mistral"])[0]
+                                    )
+                                
+                            with gr.Accordion("Advanced Settings", open=False):
+                                system_prompt = gr.Textbox(
+                                    label="System Prompt",
+                                    lines=3,
+                                    placeholder="Enter the detailed system prompt for the bot..."
+                                )
+                                
+                                with gr.Row():
+                                    with gr.Column():
+                                        gr.Markdown("### Response Style")
+                                        temperature = gr.Slider(
+                                            minimum=0.1,
+                                            maximum=2.0,
+                                            value=0.7,
+                                            step=0.1,
+                                            label="Creativity Level",
+                                            info="Higher values make responses more creative but less focused"
+                                        )
+                                        top_p = gr.Slider(
+                                            minimum=0.1,
+                                            maximum=1.0,
+                                            value=0.95,
+                                            step=0.05,
+                                            label="Response Focus",
+                                            info="Lower values make responses more focused on the most likely options"
+                                        )
+                                        repetition_penalty = gr.Slider(
+                                            minimum=1.0,
+                                            maximum=2.0,
+                                            value=1.1,
+                                            step=0.1,
+                                            label="Repetition Prevention",
+                                            info="Higher values help prevent the bot from repeating itself"
+                                        )
+                                    with gr.Column():
+                                        gr.Markdown("### Response Length")
+                                        max_new_tokens = gr.Slider(
+                                            minimum=64,
+                                            maximum=4096,
+                                            value=4096,
+                                            step=64,
+                                            label="Maximum Length",
+                                            info="Maximum number of words in the response"
+                                        )
+                                        top_k = gr.Slider(
+                                            minimum=1,
+                                            maximum=100,
+                                            value=50,
+                                            step=1,
+                                            label="Response Variety",
+                                            info="Higher values allow for more varied word choices"
+                                        )
+                                
+                            with gr.Row():
+                                back_to_chat = gr.Button("← Back to Chat")
+                                save_bot_btn = gr.Button("Create Bot", variant="primary")
+                                delete_bot_btn = gr.Button("Delete Bot", variant="stop")
+            
+            with gr.Tab("Model Management"):
+                with gr.Row():
+                    with gr.Column():
+                        gr.Markdown("### Available Models")
+                        models_table = gr.Dataframe(
+                            headers=["Name", "Size", "Downloaded", "Loaded"],
+                            value=list_available_models(),
+                            interactive=False,
+                            elem_classes="dark table"
+                        )
+                        with gr.Row():
+                            refresh_btn = gr.Button("🔄 Refresh", size="sm", scale=0.2)
+                            download_btn = gr.Button("⬇️ Download", size="sm", scale=0.2)
+                            remove_btn = gr.Button("🗑️ Remove", size="sm", scale=0.2)
                     
-                chat_data = response.json()
-                chat_id = chat_data['id']
-                initial_title = "New Chat"
-                
-                # Update the chat with initial title
-                title_response = requests.put(
-                    f'http://127.0.0.1:7860/api/chats/{chat_id}',
-                    json={'title': initial_title},
-                    headers=headers
+                    with gr.Column():
+                        gr.Markdown("### Add Custom Model")
+                        model_name = gr.Textbox(label="Model Name")
+                        model_size = gr.Textbox(label="Size (e.g., '3.83GB')")
+                        model_type = gr.Dropdown(
+                            choices=["GGUF", "GGML", "PyTorch", "SafeTensors"],
+                            label="Model Type"
+                        )
+                        model_url = gr.Textbox(label="Download URL")
+                        add_model_btn = gr.Button("➕ Add Model", size="sm", scale=0.2)
+                        add_result = gr.Markdown()
+
+                # Event handlers
+                refresh_btn.click(
+                    fn=refresh_model_list,
+                    outputs=[models_table]
+                ).then(  # Update base_model choices after refreshing model list
+                    fn=update_base_model_choices,
+                    outputs=[base_model]
                 )
                 
-                if title_response.status_code != 200:
-                    print(f"[ERROR] Failed to set initial title: {title_response.status_code}")
-                
-                # Get updated list of chats
-                choices = list_chats()
-                # Find the matching title for this chat ID
-                selected_title = initial_title
-                
-                return gr.update(choices=choices, value=selected_title), [], f"### {initial_title}"
-            except Exception as e:
-                print(f"[ERROR] Error creating chat: {e}")
-                return gr.update(), [], "### Error creating chat"
+                def handle_download(data):
+                    if not data or len(data) == 0:
+                        return "Please select a model first"
+                    model_name = data[0][0]  # Get name from first column
+                    result = download_model(model_name)
+                    refresh_model_list()
+                    return result
 
-        # Event handlers
-        new_chat_btn.click(
-            create_new_chat,
-            outputs=[chat_history_dropdown, chatbot, chat_title_display]
+                def handle_remove(data):
+                    if not data or len(data) == 0:
+                        return "Please select a model first"
+                    model_name = data[0][0]  # Get name from first column
+                    result = remove_model(model_name)
+                    refresh_model_list()
+                    return result
+
+                download_btn.click(
+                    fn=handle_download,
+                    inputs=[models_table],
+                    outputs=[add_result]
+                ).then(  # Update base_model choices after downloading
+                    fn=update_base_model_choices,
+                    outputs=[base_model]
+                )
+                
+                remove_btn.click(
+                    fn=handle_remove,
+                    inputs=[models_table],
+                    outputs=[add_result]
+                ).then(  # Update base_model choices after removing
+                    fn=update_base_model_choices,
+                    outputs=[base_model]
+                )
+                
+                add_model_btn.click(
+                    fn=add_custom_model,
+                    inputs=[model_name, model_size, model_type, model_url],
+                    outputs=[add_result]
+                ).then(
+                    fn=refresh_model_list,
+                    outputs=[models_table]
+                ).then(  # Update base_model choices after adding custom model
+                    fn=update_base_model_choices,
+                    outputs=[base_model]
+                )
+
+        # Event handlers for chat
+        submit_btn.click(
+            submit_message,
+            inputs=[
+                msg,
+                chatbot,
+                chat_history_dropdown,
+                bot_dropdown,
+                temperature,
+                max_new_tokens,
+                top_p,
+                top_k,
+                repetition_penalty
+            ],
+            outputs=[chatbot, msg],
+            api_name=False
+        ).then(
+            lambda: None,
+            None,
+            [msg],
+            api_name=False
         )
 
         msg.submit(
-            user,
-            [msg, chatbot, chat_history_dropdown],
-            [msg, chatbot, chat_history_dropdown, chat_title_display]
+            submit_message,
+            inputs=[
+                msg,
+                chatbot,
+                chat_history_dropdown,
+                bot_dropdown,
+                temperature,
+                max_new_tokens,
+                top_p,
+                top_k,
+                repetition_penalty
+            ],
+            outputs=[chatbot, msg],
+            api_name=False
         ).then(
-            process_bot_response,
-            [chat_history_dropdown, chatbot],
-            chatbot
+            lambda: None,
+            None,
+            [msg],
+            api_name=False
         )
 
-        submit.click(
-            user,
-            [msg, chatbot, chat_history_dropdown],
-            [msg, chatbot, chat_history_dropdown, chat_title_display]
+        # Event handlers for bot configuration
+        edit_bot_btn.click(
+            switch_to_bot_config,
+            None,
+            [chat_panel, bot_config_panel]
+        )
+        
+        back_to_chat.click(
+            switch_to_chat,
+            None,
+            [chat_panel, bot_config_panel]
+        )
+        
+        config_bot_dropdown.change(
+            update_bot_config,
+            inputs=[config_bot_dropdown],
+            outputs=[new_bot_name, bot_description, greeting_message, base_model, system_prompt, temperature, max_new_tokens, 
+                    top_p, top_k, repetition_penalty, save_bot_btn]
+        )
+        
+        save_bot_btn.click(
+            create_new_bot,
+            inputs=[new_bot_name, bot_description, greeting_message, base_model, system_prompt, temperature, max_new_tokens, top_p, top_k, repetition_penalty],
+            outputs=[new_bot_name, bot_dropdown]
         ).then(
-            process_bot_response,
-            [chat_history_dropdown, chatbot],
-            chatbot
+            switch_to_chat,
+            None,
+            [chat_panel, bot_config_panel]
+        )
+        
+        delete_bot_btn.click(
+            delete_current_bot,
+            inputs=[config_bot_dropdown],
+            outputs=[bot_dropdown, config_bot_dropdown]
+        ).then(
+            switch_to_chat,
+            None,
+            [chat_panel, bot_config_panel]
         )
 
-        chat_history_dropdown.change(
-            load_selected_chat,
-            inputs=[chat_history_dropdown],
-            outputs=[chatbot, chat_title_display]
+        # Chat history handlers
+        new_chat_btn.click(
+            create_new_chat,
+            None,
+            [chat_history_dropdown, chatbot, chat_title_display]
         )
 
         delete_btn.click(
@@ -966,16 +1197,18 @@ def create_interface():
             inputs=[chat_history_dropdown],
             outputs=[chat_history_dropdown, chatbot, chat_title_display]
         )
-        
+
         rename_btn.click(
             rename_chat,
             inputs=[chat_history_dropdown],
             outputs=[chat_history_dropdown, chat_title_display]
         )
 
-        clear.click(lambda: None, None, chatbot, queue=False)
-        model_dropdown.change(change_model, model_dropdown, system_info)
-        refresh_sys_info.click(refresh_system_information, None, system_info)
+        chat_history_dropdown.change(
+            load_selected_chat,
+            inputs=[chat_history_dropdown],
+            outputs=[chatbot, chat_title_display]
+        )
 
     return interface
 

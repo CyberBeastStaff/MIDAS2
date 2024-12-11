@@ -8,6 +8,7 @@ from flask import Flask
 from flask_cors import CORS
 from backend.chat_routes import chat_routes
 from backend.bot_routes import bot_routes
+from backend.model_routes import model_routes
 import logging
 
 app = Flask(__name__)
@@ -20,6 +21,7 @@ logger = logging.getLogger(__name__)
 # Register blueprints
 app.register_blueprint(chat_routes)
 app.register_blueprint(bot_routes)
+app.register_blueprint(model_routes)
 
 if __name__ == '__main__':
     app.run(port=7860)
